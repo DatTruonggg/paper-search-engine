@@ -5,14 +5,14 @@ This document shows the end-to-end workflow for the academic chatbot with two ca
 ```mermaid
 flowchart TD
   U[User] --> R[Intent Router]
-  R -->|Find Papers| AGG[Academic Aggregator\n(arXiv, OpenAlex, S2)]
+  R -->|Find Papers| AGG[Academic Aggregator -- arXiv, OpenAlex, S2]
   AGG --> SR[Ranked Paper Results\n(snippets + scores)]
 
   R -->|Ask Question| RET[Hybrid Retriever (Elasticsearch)]
   RET --> RR[Optional Rerank (OpenAI)]
-  RR --> CT[Context Builder\n(select 6–12 chunks)]
+  RR --> CT[Context Builder -- select 6–12 chunks]
   CT --> GEN[OpenAI LLM\n(gpt-4o-mini)]
-  GEN --> ANS[Answer + Citations\n(grounded quotes)]
+  GEN --> ANS[Answer + Citations -- grounded quotes]
 
   SR --> UI[Web UI]
   ANS --> UI
@@ -21,8 +21,8 @@ flowchart TD
     Q[Collect IDs (arXiv/OpenAlex)] --> DL[Download PDFs]
     DL --> PRS[Parse: GROBID → Unstructured]
     PRS --> CH[Section-aware Chunking]
-    CH --> EMB[OpenAI Embeddings\n(text-embedding-3-large)]
-    EMB --> ES[Elasticsearch Index\nBM25 + HNSW]
+    CH --> EMB[OpenAI Embeddings -- text-embedding-3-large]
+    EMB --> ES[Elasticsearch Index -- BM25]
     META[Metadata → Postgres] --> ES
     PDF[PDF/Parsed JSON → MinIO]
   end
