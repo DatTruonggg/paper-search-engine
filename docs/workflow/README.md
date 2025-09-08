@@ -8,17 +8,17 @@ flowchart TD
   R -->|Find Papers| AGG[Academic Aggregator -- arXiv, OpenAlex, S2]
   AGG --> SR[Ranked Paper Results -- snippets + scores]
 
-  R -->|Ask Question| RET[Hybrid Retriever (Elasticsearch)]
-  RET --> RR[Optional Rerank (OpenAI)]
+  R -->|Ask Question| RET[Hybrid Retriever -- Elasticsearch]
+  RET --> RR[Optional Rerank -- OpenAI]
   RR --> CT[Context Builder -- select 6–12 chunks]
-  CT --> GEN[OpenAI LLM\n(gpt-4o-mini)]
+  CT --> GEN[OpenAI LLM -- gpt-4o-mini]
   GEN --> ANS[Answer + Citations -- grounded quotes]
 
   SR --> UI[Web UI]
   ANS --> UI
 
   subgraph Offline Ingestion & Indexing
-    Q[Collect IDs (arXiv/OpenAlex)] --> DL[Download PDFs]
+    Q[Collect IDs -- arXiv/OpenAlex] --> DL[Download PDFs]
     DL --> PRS[Parse: GROBID → Unstructured]
     PRS --> CH[Section-aware Chunking]
     CH --> EMB[OpenAI Embeddings -- text-embedding-3-large]
