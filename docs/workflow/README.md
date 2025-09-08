@@ -16,8 +16,10 @@ flowchart TD
 
   SR --> UI[Web UI]
   ANS --> UI
-
-  subgraph Offline Ingestion & Indexing
+end
+```
+```mermaid
+flowchart TD Ingestion & Indexing
     Q[Collect IDs -- arXiv/OpenAlex] --> DL[Download PDFs]
     DL --> PRS[Parse pdf]
     PRS --> CH[Section-aware Chunking]
@@ -27,7 +29,6 @@ flowchart TD
     PDF[PDF/Parsed JSON → MinIO]
   end
 ```
-
 ### Components
 - Intent Router: decides between Find Papers and Ask Question.
 - Academic Aggregator: queries arXiv/OpenAlex/Semantic Scholar, normalizes, dedupes, ranks.
