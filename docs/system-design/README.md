@@ -35,7 +35,7 @@ This document outlines the architecture for the academic chatbot built with Open
 
 ### Key Algorithms
 - Section-aware chunking: split by headings; avoid references/acks; maintain page spans for precise quotes.
-- Hybrid retrieval: normalize BM25 and dense scores; RRF fusion; tie-break by year/venue.
+- Hybrid retrieval: normalize BM25 and dense scores; tie-break by year/venue.
 - Rerank (optional): OpenAI small pass on top 50 passages.
 - Prompting: enforce citations; penalize missing quotes; refusal when grounding insufficient.
 
