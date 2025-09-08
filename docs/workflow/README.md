@@ -6,7 +6,7 @@ This document shows the end-to-end workflow for the academic chatbot with two ca
 flowchart TD
   U[User] --> R[Intent Router]
   R -->|Find Papers| AGG[Academic Aggregator -- arXiv, OpenAlex, S2]
-  AGG --> SR[Ranked Paper Results\n(snippets + scores)]
+  AGG --> SR[Ranked Paper Results -- snippets + scores]
 
   R -->|Ask Question| RET[Hybrid Retriever (Elasticsearch)]
   RET --> RR[Optional Rerank (OpenAI)]
