@@ -19,7 +19,7 @@ flowchart TD
 
   subgraph Offline Ingestion & Indexing
     Q[Collect IDs -- arXiv/OpenAlex] --> DL[Download PDFs]
-    DL --> PRS[Parse: GROBID → Unstructured]
+    DL --> PRS[Parse pdf]
     PRS --> CH[Section-aware Chunking]
     CH --> EMB[OpenAI Embeddings -- text-embedding-3-large]
     EMB --> ES[Elasticsearch Index -- BM25]
