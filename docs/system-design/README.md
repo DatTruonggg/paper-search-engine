@@ -17,12 +17,12 @@ This document outlines the architecture for the academic chatbot built with Open
 - MinIO (S3-compatible):
   - `pdf/{paper_id}.pdf`
   - `parsed/{paper_id}.json`
-- Postgres:
+- Postgres (Metadata):
   - `papers` (id, title, abstract, year, venue, primary_ids, urls)
   - `authors`, `paper_authors`
   - `identifiers` (arxiv_id, doi, openalex_id, s2_id)
   - `citations` (optional)
-- Elasticsearch:
+- Elasticsearch (Vectordatabase):
   - `paper_chunks` index: `text`, `embedding (dense_vector)`, `paper_id`, `section`, `headings`, `year`, `venue`
   - `papers_meta` index for aggregator ranking and filters
 
@@ -48,4 +48,5 @@ This document outlines the architecture for the academic chatbot built with Open
 - PDF parsing variance → GROBID first, retries, fallback parser.
 - OA gaps → keep abstracts; flag non-groundable in UI.
 - Latency → cache aggregator results; batch embeddings; stream model outputs.
+- Cost
 
