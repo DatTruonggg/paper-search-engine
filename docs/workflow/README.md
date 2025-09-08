@@ -16,18 +16,16 @@ flowchart TD
 
   SR --> UI[Web UI]
   ANS --> UI
-end
 ```
 ```mermaid
 flowchart TD Ingestion & Indexing
-    Q[Collect IDs -- arXiv/OpenAlex] --> DL[Download PDFs]
-    DL --> PRS[Parse pdf]
-    PRS --> CH[Section-aware Chunking]
-    CH --> EMB[OpenAI Embeddings -- text-embedding-3-large]
-    EMB --> ES[Elasticsearch Index -- BM25]
-    META[Metadata → Postgres] --> ES
-    PDF[PDF/Parsed JSON → MinIO]
-  end
+  Q[Collect IDs -- arXiv/OpenAlex] --> DL[Download PDFs]
+  DL --> PRS[Parse pdf]
+  PRS --> CH[Section-aware Chunking]
+  CH --> EMB[OpenAI Embeddings -- text-embedding-3-large]
+  EMB --> ES[Elasticsearch Index -- BM25]
+  META[Metadata → Postgres] --> ES
+  PDF[PDF/Parsed JSON → MinIO]
 ```
 ### Components
 - Intent Router: decides between Find Papers and Ask Question.
