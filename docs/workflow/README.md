@@ -10,7 +10,7 @@ flowchart TD
 
   R -->|Ask Question| RET[Hybrid Retriever -- Elasticsearch]
   RET --> RR[Optional Rerank -- OpenAI]
-  RR --> CT[Context Builder -- select 6–12 chunks]
+  RR --> CT[Context Builder -- select top K chunks]
   CT --> GEN[OpenAI LLM]
   GEN --> ANS[Answer + Citations -- grounded quotes]
 
