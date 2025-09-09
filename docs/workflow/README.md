@@ -18,7 +18,8 @@ flowchart TD
   ANS --> UI
 ```
 ```mermaid
-subgraph Offline Ingestion & Indexing
+flowchart TD
+  subgraph Offline Ingestion & Indexing
     Q[Collect IDs -- arXiv/OpenAlex] --> DL[Download PDFs]
     DL --> PRS[Parse pdf]
     PRS --> CH[Section-aware Chunking]
