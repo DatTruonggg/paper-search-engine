@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""
+Docling-based PDF to Text Converter
+
+This script converts a directory of ArXiv PDFs into plain text files using Docling.
+It is designed for subsequent ingestion into Elasticsearch.
+
+Usage example:
+    python -m data_pipeline.docling_pdf_parser \
+        --input-dir "/Users/admin/code/cazoodle/data/pdfs" \
+        --output-dir "./data/processed/txt" \
+        --overwrite false
+
+Notes:
+- Defaults are set to the user's absolute input directory and repo-local output.
+- Output content is Markdown exported by Docling and saved with .md extension.
+"""
+
+import argparse
+import logging
+from pathlib import Path
+from typing import Optional
+import json
+from datetime import datetime
+
+from docling.document_converter import DocumentConverter
+
+
+def configure_logger(verbosity: int) -> None:
+    """Configure root logger based on verbosity level."""
+    level = logging.WARNING if verbosity == 0 else logging.INFO if verbosity == 1 else logging.DEBUG
+    logging.basicConfig(level=level, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+def export_pdf_to_txt(converter: DocumentConverter, pdf_path: Path, txt_path: Path) -> dict:
+    """
+    Convert a single PDF to text using Docling and write to disk.
+
+    Returns a dict with status information for logging and metrics.
+    """
+    result = {
+        "pdf": str(pdf_path),
+        "txt": str(txt_path),
+        "status": "pending",
+        "bytes": 0,
+    }
+
+    try:
+        conversion = converter.convert(str(pdf_path))
+        markdown_text = conversion.document.export_to_markdown()
+        txt_path.parent.mkdir(parents=True, exist_ok=True)
+        txt_path.write_text(markdown_text, encoding='utf-8')
+        result["bytes"] = txt_path.stat().st_size
+        result["status"] = "ok"
+        return result
+    except Exception as exc:  # Only logic-related comment: capture and report conversion errors
+        result["status"] = "error"
+        result["error"] = str(exc)
+        return result
+
+
+def discover_pdfs(input_dir: Path, pattern: str) -> list[Path]:
+    """Discover PDF files in the input directory matching a glob pattern."""
+    return sorted(input_dir.glob(pattern))
+
+
+def build_output_path(output_dir: Path, pdf_path: Path) -> Path:
+    """Build output .md path mirroring the input filename (without extension)."""
+    stem = pdf_path.stem
+    return output_dir / f"{stem}.md"
+
+
+def save_run_manifest(output_dir: Path, stats: dict) -> None:
+    """Persist a small JSON manifest describing the run for auditability."""
+    manifest = {
+        "timestamp": datetime.now().isoformat(),
+        "input_dir": stats.get("input_dir"),
+        "output_dir": str(output_dir),
+        "total": stats.get("total", 0),
+        "converted": stats.get("converted", 0),
+        "skipped": stats.get("skipped", 0),
+        "failed": stats.get("failed", 0),
+    }
+    path = output_dir / f"docling_parse_manifest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+
+
+def run(
+    input_dir: Path,
+    output_dir: Path,
+    pattern: str = "*.pdf",
+    overwrite: bool = False,
+    limit: Optional[int] = None,
+) -> dict:
+    """
+    Perform batch conversion of PDFs under input_dir to text files under output_dir.
+
+    Returns run statistics for logging and testing.
+    """
+    logger = logging.getLogger(__name__)
+    logger.info("Starting Docling PDF parsing pipeline…")
+    logger.info(f"Input: {input_dir}")
+    logger.info(f"Output: {output_dir}")
+
+    pdf_paths = discover_pdfs(input_dir, pattern)
+    if limit is not None:
+        pdf_paths = pdf_paths[: max(0, int(limit))]
+
+    logger.info(f"Discovered {len(pdf_paths)} PDF(s)")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    converter = DocumentConverter()
+
+    converted = 0
+    skipped = 0
+    failed = 0
+
+    for pdf in pdf_paths:
+        txt_path = build_output_path(output_dir, pdf)
+
+        if txt_path.exists() and not overwrite:
+            skipped += 1
+            continue
+
+        res = export_pdf_to_txt(converter, pdf, txt_path)
+        if res["status"] == "ok":
+            converted += 1
+            logger.debug(f"Converted: {pdf} -> {txt_path} ({res['bytes']} bytes)")
+        else:
+            failed += 1
+            logger.warning(f"Failed: {pdf} -> {res.get('error', 'unknown error')}")
+
+    stats = {
+        "input_dir": str(input_dir),
+        "total": len(pdf_paths),
+        "converted": converted,
+        "skipped": skipped,
+        "failed": failed,
+    }
+
+    logger.info(
+        f"Completed. total={stats['total']} converted={converted} skipped={skipped} failed={failed}"
+    )
+    save_run_manifest(output_dir, stats)
+    return stats
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for the parser script."""
+    parser = argparse.ArgumentParser(description="Batch convert PDFs to text using Docling")
+    parser.add_argument(
+        "--input-dir",
+        default="/Users/admin/code/cazoodle/data/pdfs",
+        help="Directory containing input PDF files",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="./data/processed/txt",
+        help="Directory to write .txt files",
+    )
+    parser.add_argument(
+        "--pattern",
+        default="*.pdf",
+        help="Glob pattern to select PDFs under input-dir",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing outputs if they exist",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Optional maximum number of files to process",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=1,
+        help="Increase verbosity (-v for INFO, -vv for DEBUG)",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    """Entry point for CLI execution."""
+    args = parse_args()
+    configure_logger(args.verbose)
+
+    input_dir = Path(args.input_dir).expanduser().resolve()
+    output_dir = Path(args.output_dir).expanduser().resolve()
+
+    if not input_dir.exists():
+        raise SystemExit(f"Input directory does not exist: {input_dir}")
+
+    run(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        pattern=args.pattern,
+        overwrite=args.overwrite,
+        limit=args.limit,
+    )
+
+
+if __name__ == "__main__":
+    main()
+
+
