@@ -1,0 +1,101 @@
+version: '3.8'
+
+services:
+  paper-search-elasticsearch:
+    image: elasticsearch:8.11.0
+    container_name: paper-search-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+      - cluster.name=paper-search-cluster
+      - node.name=paper-search-node
+    ports:
+      - "9202:9200"  # Changed port to avoid conflict
+      - "9302:9300"  # Changed port to avoid conflict
+    volumes:
+      - paper-search-es-data:/usr/share/elasticsearch/data
+    networks:
+      - paper-search-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  paper-search-minio:
+    image: minio/minio:latest
+    container_name: paper-search-minio
+    ports:
+      - "9002:9000"  # Changed port to avoid conflict
+      - "9003:9001"  # Changed port to avoid conflict
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_DEFAULT_BUCKETS: papers,markdown,images
+    command: server /data --console-address ":9001"
+    volumes:
+      - paper-search-minio-data:/data
+    networks:
+      - paper-search-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  paper-search-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: paper-search-backend
+    ports:
+      - "8002:8000"  # Changed port to avoid conflict
+    environment:
+      - ES_HOST=paper-search-elasticsearch:9200
+      - MINIO_ENDPOINT=paper-search-minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - BGE_MODEL_NAME=BAAI/bge-large-en-v1.5
+      - PYTHONPATH=/app
+    volumes:
+      - ./backend:/app/backend
+      - ./data_pipeline:/app/data_pipeline
+      - ./data:/app/data
+      - ./models:/app/models
+    networks:
+      - paper-search-net
+    depends_on:
+      - paper-search-elasticsearch
+      - paper-search-minio
+    command: uvicorn backend.api.main:app --host 0.0.0.0 --port 8000 --reload
+
+  paper-search-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    container_name: paper-search-ui
+    ports:
+      - "8503:8501"  # Changed port to avoid conflict
+    environment:
+      - BACKEND_URL=http://paper-search-backend:8000
+      - PYTHONPATH=/app
+    volumes:
+      - ./streamlit_app:/app/streamlit_app
+    networks:
+      - paper-search-net
+    depends_on:
+      - paper-search-backend
+    command: streamlit run streamlit_app/app.py --server.port 8501 --server.address 0.0.0.0
+
+networks:
+  paper-search-net:
+    driver: bridge
+
+volumes:
+  paper-search-es-data:
+    driver: local
+  paper-search-minio-data:
+    driver: local

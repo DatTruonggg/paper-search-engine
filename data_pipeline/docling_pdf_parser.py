@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Docling-based PDF to Text Converter
+Docling-based PDF to Markdown Converter
 
-This script converts a directory of ArXiv PDFs into plain text files using Docling.
+This script converts a directory of ArXiv PDFs into markdown files using Docling.
 It is designed for subsequent ingestion into Elasticsearch.
 
 Usage example:
     python -m data_pipeline.docling_pdf_parser \
         --input-dir "/Users/admin/code/cazoodle/data/pdfs" \
-        --output-dir "./data/processed/txt" \
+        --output-dir "./data/processed/markdown" \
         --overwrite false
 
 Notes:
@@ -32,15 +32,15 @@ def configure_logger(verbosity: int) -> None:
     logging.basicConfig(level=level, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
-def export_pdf_to_txt(converter: DocumentConverter, pdf_path: Path, txt_path: Path) -> dict:
+def export_pdf_to_markdown(converter: DocumentConverter, pdf_path: Path, markdown_path: Path) -> dict:
     """
-    Convert a single PDF to text using Docling and write to disk.
+    Convert a single PDF to markdown using Docling and write to disk.
 
     Returns a dict with status information for logging and metrics.
     """
     result = {
         "pdf": str(pdf_path),
-        "txt": str(txt_path),
+        "markdown": str(markdown_path),
         "status": "pending",
         "bytes": 0,
     }
@@ -48,9 +48,9 @@ def export_pdf_to_txt(converter: DocumentConverter, pdf_path: Path, txt_path: Pa
     try:
         conversion = converter.convert(str(pdf_path))
         markdown_text = conversion.document.export_to_markdown()
-        txt_path.parent.mkdir(parents=True, exist_ok=True)
-        txt_path.write_text(markdown_text, encoding='utf-8')
-        result["bytes"] = txt_path.stat().st_size
+        markdown_path.parent.mkdir(parents=True, exist_ok=True)
+        markdown_path.write_text(markdown_text, encoding='utf-8')
+        result["bytes"] = markdown_path.stat().st_size
         result["status"] = "ok"
         return result
     except Exception as exc:  # Only logic-related comment: capture and report conversion errors
@@ -94,7 +94,7 @@ def run(
     limit: Optional[int] = None,
 ) -> dict:
     """
-    Perform batch conversion of PDFs under input_dir to text files under output_dir.
+    Perform batch conversion of PDFs under input_dir to markdown files under output_dir.
 
     Returns run statistics for logging and testing.
     """
@@ -117,16 +117,16 @@ def run(
     failed = 0
 
     for pdf in pdf_paths:
-        txt_path = build_output_path(output_dir, pdf)
+        markdown_path = build_output_path(output_dir, pdf)
 
-        if txt_path.exists() and not overwrite:
+        if markdown_path.exists() and not overwrite:
             skipped += 1
             continue
 
-        res = export_pdf_to_txt(converter, pdf, txt_path)
+        res = export_pdf_to_markdown(converter, pdf, markdown_path)
         if res["status"] == "ok":
             converted += 1
-            logger.debug(f"Converted: {pdf} -> {txt_path} ({res['bytes']} bytes)")
+            logger.debug(f"Converted: {pdf} -> {markdown_path} ({res['bytes']} bytes)")
         else:
             failed += 1
             logger.warning(f"Failed: {pdf} -> {res.get('error', 'unknown error')}")
@@ -148,7 +148,7 @@ def run(
 
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments for the parser script."""
-    parser = argparse.ArgumentParser(description="Batch convert PDFs to text using Docling")
+    parser = argparse.ArgumentParser(description="Batch convert PDFs to markdown using Docling")
     parser.add_argument(
         "--input-dir",
         default="/Users/admin/code/cazoodle/data/pdfs",
@@ -156,8 +156,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        default="./data/processed/txt",
-        help="Directory to write .txt files",
+        default="./data/processed/markdown",
+        help="Directory to write .markdown files",
     )
     parser.add_argument(
         "--pattern",

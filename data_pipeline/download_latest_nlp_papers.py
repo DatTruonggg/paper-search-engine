@@ -248,7 +248,7 @@ async def main():
     # Configuration
     NUM_PAPERS = 1000
     USE_CATEGORIES = True
-    USE_KEYWORDS = True
+    USE_KEYWORDS = False
     MIN_KEYWORD_MATCHES = 1
     LIMIT_DATASET = None  # Set to None for full dataset, or number for testing
     
