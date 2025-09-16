@@ -8,6 +8,7 @@ Provides search functionality for papers with multiple search modes:
 """
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from backend.api.main import search_service
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import logging
@@ -48,7 +49,7 @@ class SearchResponse(BaseModel):
 
 
 @router.post("/search", response_model=SearchResponse, tags=["Search"])
-async def search_papers(request: SearchRequest, req: Request = None):
+async def search_papers(request: SearchRequest, req: Request):
     """
     Search for papers in title and abstract only.
 
@@ -60,9 +61,6 @@ async def search_papers(request: SearchRequest, req: Request = None):
     Note: This endpoint searches only in title and abstract fields for faster results.
     Use /api/v1/search_full_papers to search within paper content.
     """
-    from fastapi import Request
-    from backend.api.main import search_service
-
     if not search_service:
         raise HTTPException(status_code=503, detail="Search service not initialized")
 
@@ -109,7 +107,7 @@ async def search_papers(request: SearchRequest, req: Request = None):
 
 
 @router.post("/search_full_papers", response_model=SearchResponse, tags=["Search"])
-async def search_full_papers(request: SearchRequest):
+async def search_full_papers(request: SearchRequest, req: Request):
     """
     Search for papers in title, abstract, and full paper content (chunks).
 
@@ -121,8 +119,6 @@ async def search_full_papers(request: SearchRequest):
     Note: This endpoint searches in title, abstract, AND paper content (chunks).
     This provides deeper search but may be slower. Use /api/v1/search for title/abstract only.
     """
-    from backend.api.main import search_service
-
     if not search_service:
         raise HTTPException(status_code=503, detail="Search service not initialized")
 
@@ -170,6 +166,7 @@ async def search_full_papers(request: SearchRequest):
 
 @router.get("/search/suggest", tags=["Search"])
 async def search_suggestions(
+    request: Request,
     query: str = Query(..., description="Query prefix for suggestions"),
     max_results: int = Query(5, ge=1, le=20, description="Maximum number of suggestions")
 ):
@@ -178,8 +175,6 @@ async def search_suggestions(
     This is a simplified version - in production, you'd want to implement
     proper autocomplete with a dedicated suggestion index.
     """
-    from backend.api.main import search_service
-
     if not search_service:
         raise HTTPException(status_code=503, detail="Search service not initialized")
 

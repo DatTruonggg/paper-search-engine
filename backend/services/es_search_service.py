@@ -162,9 +162,9 @@ class ElasticsearchSearchService:
                 logger.info(f"Raw result {i}: paper_id={hit.get('paper_id', 'N/A')}, title={hit.get('title', 'N/A')[:50]}, score={hit.get('_score', 0)}")
 
             # Apply filters
-            if categories and not any(cat in hit.get('categories', []) for cat in categories):
-                logger.info(f"Filtered out {hit.get('paper_id', 'unknown')} - categories mismatch. Looking for {categories}, found {hit.get('categories', [])}")
-                continue
+            # if categories and not any(cat in hit.get('categories', []) for cat in categories):
+            #     logger.info(f"Filtered out {hit.get('paper_id', 'unknown')} - categories mismatch. Looking for {categories}, found {hit.get('categories', [])}")
+            #     continue
 
             if author and author.lower() not in ' '.join(hit.get('authors', [])).lower():
                 logger.info(f"Filtered out {hit.get('paper_id', 'unknown')} - author mismatch. Looking for '{author}', found {hit.get('authors', [])}")
