@@ -5,27 +5,29 @@ This document shows the end-to-end workflow for the academic chatbot with two ca
 ```mermaid
 flowchart TD
   U[User] --> R[Intent Router]
-  R -->|Find Papers| AGG[Academic Aggregator -- arXiv, OpenAlex, S2]
+  R -->|Find Papers| AGG[Academic Aggregator -- arXiv, OpenAlex]
   AGG --> SR[Ranked Paper Results -- snippets + scores]
 
   R -->|Ask Question| RET[Hybrid Retriever -- Elasticsearch]
   RET --> RR[Optional Rerank -- OpenAI]
-  RR --> CT[Context Builder -- select 6–12 chunks]
-  CT --> GEN[OpenAI LLM -- gpt-4o-mini]
+  RR --> CT[Context Builder -- select top K chunks]
+  CT --> GEN[OpenAI LLM]
   GEN --> ANS[Answer + Citations -- grounded quotes]
 
   SR --> UI[Web UI]
   ANS --> UI
 ```
 ```mermaid
-flowchart TD Ingestion & Indexing
-  Q[Collect IDs -- arXiv/OpenAlex] --> DL[Download PDFs]
-  DL --> PRS[Parse pdf]
-  PRS --> CH[Section-aware Chunking]
-  CH --> EMB[OpenAI Embeddings -- text-embedding-3-large]
-  EMB --> ES[Elasticsearch Index -- BM25]
-  META[Metadata → Postgres] --> ES
-  PDF[PDF/Parsed JSON → MinIO]
+flowchart TD
+  subgraph Offline Ingestion & Indexing
+    Q[Collect IDs -- arXiv/OpenAlex] --> DL[Download PDFs]
+    DL --> PRS[Parse pdf]
+    PRS --> CH[Section-aware Chunking]
+    CH --> EMB[OpenAI Embeddings -- text-embedding-3-large]
+    EMB --> ES[Elasticsearch Index -- BM25]
+    META[Metadata → Postgres] --> ES
+    PDF[PDF/Parsed JSON → MinIO]
+  end
 ```
 ### Components
 - Intent Router: decides between Find Papers and Ask Question.

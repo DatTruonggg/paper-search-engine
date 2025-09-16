@@ -320,3 +320,5 @@ Contributions welcome! Please see:
 ---
 
 *Built with ❤️ for the academic and research community. Powered by BGE embeddings and Elasticsearch.*
+
+# PAPER SEARCH CHATBOT
