@@ -1,16 +1,7 @@
-## How to run the UI 
-```
-cd frontend
-npm install
-npm dev run 
-```
-
-## API Structure
+# Frontend 
 
 Please read `lib/research-service.ts` and `lib/apiClinent.ts` for understanding the API structure. 
 
-````markdown
-# README  
 
 ## How to run the UI
 ```bash
