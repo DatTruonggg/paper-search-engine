@@ -13,6 +13,7 @@ import os
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from backend.services import ElasticsearchSearchService
+from backend.config import config
 
 # Configure logging
 logging.basicConfig(
@@ -37,32 +38,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global search service for access from routers
-search_service = None
+"""Eagerly initialize core services at import time."""
+logger.info(f"Initializing search service with ES host: {config.ES_HOST}")
 
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize services on startup and attach to app.state."""
-    global search_service
-
-    from backend.config import config
-
-    logger.info(f"Initializing search service with ES host: {config.ES_HOST}")
-
-    try:
-        search_service = ElasticsearchSearchService(
-            es_host=config.ES_HOST,
-            index_name=config.ES_INDEX_NAME,
-            bge_model=config.BGE_MODEL_NAME,
-            bge_cache_dir=config.BGE_CACHE_DIR
-        )
-        logger.info("Search service initialized successfully")
-        # Attach to app state for access within routers
-        app.state.search_service = search_service
-    except Exception as e:
-        logger.error(f"Failed to initialize search service: {e}")
-        raise
+try:
+    # Global search service for access from routers
+    search_service = ElasticsearchSearchService(
+        es_host=config.ES_HOST,
+        index_name=config.ES_INDEX_NAME,
+        bge_model=config.BGE_MODEL_NAME,
+        bge_cache_dir=config.BGE_CACHE_DIR
+    )
+    # Attach to app state for routes that prefer accessing via request.app.state
+    app.state.search_service = search_service
+    logger.info("Search service initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize search service: {e}")
+    raise
 
 
 @app.get("/")

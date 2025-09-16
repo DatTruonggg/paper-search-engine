@@ -150,7 +150,7 @@ class PaperSearchAgent:
             search_params = self._determine_search_params(analysis, override_mode)
 
             # Execute search
-            results = self.search_tool.search_papers(**search_params)
+            results = await self.search_tool.search_papers(**search_params)
 
             # Add analysis metadata to results
             results["analysis"] = {

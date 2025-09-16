@@ -6,7 +6,7 @@ Provides functionality for:
 - Finding similar papers
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import Dict, Any
 import logging
@@ -21,13 +21,14 @@ class SimilarPapersRequest(BaseModel):
     max_results: int = Field(10, ge=1, le=50, description="Maximum number of results")
 
 
+from backend.api.main import search_service
+
+
 @router.get("/{paper_id}", tags=["Papers"])
-async def get_paper(paper_id: str):
+async def get_paper(paper_id: str, request: Request):
     """
     Get detailed information about a specific paper.
     """
-    from backend.api.main import search_service
-
     if not search_service:
         raise HTTPException(status_code=503, detail="Search service not initialized")
 
@@ -66,12 +67,10 @@ async def get_paper(paper_id: str):
 
 
 @router.post("/{paper_id}/similar", tags=["Papers"])
-async def find_similar_papers(paper_id: str, request: SimilarPapersRequest):
+async def find_similar_papers(paper_id: str, request: SimilarPapersRequest, req: Request):
     """
     Find papers similar to a given paper.
     """
-    from backend.api.main import search_service
-
     if not search_service:
         raise HTTPException(status_code=503, detail="Search service not initialized")
 
