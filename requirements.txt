@@ -1,0 +1,45 @@
+# Backend dependencies
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-dotenv
+
+transformers>=4.44.0
+torch>=2.3.0 ; platform_system != "Darwin" or platform_machine != "arm64"
+torch>=2.3.0 ; platform_system == "Darwin" and platform_machine == "arm64"
+sentence-transformers>=2.2.2
+
+# Elasticsearch
+elasticsearch>=8.0.0,<9.0.0
+elasticsearch-dsl>=8.0.0
+
+# MinIO (S3-compatible object storage)
+minio>=7.0.0
+
+# Data processing
+pandas
+numpy
+
+# Utilities
+python-dateutil
+tenacity
+tqdm
+tiktoken>=0.5.0
+
+openai
+google-genai
+aiohttp
+
+# Document processing
+beautifulsoup4
+lxml
+docling==2.51.0
+docling_core>=2.1.0
+Pillow
+pypdfium2>=4.30.0
+
+# LlamaIndex dependencies
+llama-index
+llama-index-llms-gemini
+llama-index-embeddings-huggingface
