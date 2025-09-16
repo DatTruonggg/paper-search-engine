@@ -1,3 +1,9 @@
+<<<<<<< Updated upstream
+=======
+# 1: clone asta paper finder
+# 2: make sync-dev
+
+>>>>>>> Stashed changes
 FROM python:3.11-slim
 
 WORKDIR /app

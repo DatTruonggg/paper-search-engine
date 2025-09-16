@@ -2,10 +2,15 @@
 FastAPI backend for Paper Search Engine with Elasticsearch.
 """
 
+<<<<<<< Updated upstream
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
+=======
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+>>>>>>> Stashed changes
 import logging
 from pathlib import Path
 import sys
@@ -14,10 +19,20 @@ import os
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
+<<<<<<< Updated upstream
 from backend.services import ElasticsearchSearchService, SearchResult, PaperDetails
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
+=======
+from backend.services import ElasticsearchSearchService
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG if os.getenv("DEBUG_MODE", "true").lower() == "true" else logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+>>>>>>> Stashed changes
 logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
@@ -36,6 +51,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+<<<<<<< Updated upstream
 # Initialize search service
 search_service = None
 
@@ -78,6 +94,15 @@ class SimilarPapersRequest(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
+=======
+# Global search service for access from routers
+search_service = None
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup and attach to app.state."""
+>>>>>>> Stashed changes
     global search_service
 
     from backend.config import config
@@ -92,11 +117,17 @@ async def startup_event():
             bge_cache_dir=config.BGE_CACHE_DIR
         )
         logger.info("Search service initialized successfully")
+<<<<<<< Updated upstream
+=======
+        # Attach to app state for access within routers
+        app.state.search_service = search_service
+>>>>>>> Stashed changes
     except Exception as e:
         logger.error(f"Failed to initialize search service: {e}")
         raise
 
 
+<<<<<<< Updated upstream
 @app.get("/")
 async def root():
     """Root endpoint"""
@@ -553,6 +584,19 @@ async def get_pdf_download_url(paper_id: str):
         logger.error(f"Error getting download URL: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+=======
+# Include all v1 routers
+from backend.api.v1 import health, search, papers, es, minio, agent
+
+app.include_router(health.router)
+app.include_router(search.router)
+app.include_router(papers.router)
+app.include_router(es.router)
+app.include_router(minio.router)
+app.include_router(agent.router)
+
+logger.info("All API routes configured")
+>>>>>>> Stashed changes
 
 if __name__ == "__main__":
     import uvicorn
