@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-ArXiv NLP Papers Data Pipeline
-Downloads ArXiv dataset from Kaggle, explores categories, and downloads papers
-"""
-
 import os
 import json
 import pandas as pd
@@ -11,34 +5,15 @@ import kagglehub
 from pathlib import Path
 from typing import List, Dict, Set
 from collections import Counter
-import logging
 import re
+import shutil
 from datetime import datetime
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('../data/logs/pipeline.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+from logs import log
 
 
 class ArxivDataPipeline:
-    def __init__(self, data_dir: str = "../data"):
-        self.data_dir = Path(data_dir)
-        self.raw_dir = self.data_dir / "raw"
-        self.pdfs_dir = self.data_dir / "pdfs"
-        self.processed_dir = self.data_dir / "processed"
-        self.logs_dir = self.data_dir / "logs"
-        
-        # Create directories if they don't exist
-        for dir_path in [self.raw_dir, self.pdfs_dir, self.processed_dir, self.logs_dir]:
-            dir_path.mkdir(parents=True, exist_ok=True)
-        
+    def __init__(self, bucket_name: str):
+        self.bucket_name = bucket_name
         # Define NLP-related categories
         self.nlp_categories = [
             'cs.CL',    # Computation and Language (primary NLP)
@@ -122,72 +97,38 @@ class ArxivDataPipeline:
         for category, keywords in self.nlp_keywords.items():
             self.all_nlp_keywords.extend(keywords)
     
-    def download_dataset(self) -> str:
+    def download_dataset(self, data_path: str = "Cornell-University/arxiv") -> List:
         """Download ArXiv dataset from Kaggle"""
-        logger.info("Downloading ArXiv dataset from Kaggle...")
+        log.info("Downloading ArXiv dataset from Kaggle...")
         
         try:
             # Download latest version
-            path = kagglehub.dataset_download("Cornell-University/arxiv")
-            logger.info(f"Dataset downloaded to: {path}")
-            
-            # Copy to our raw data directory
-            import shutil
+            path = kagglehub.dataset_download(data_path)
+            log.info(f"Dataset downloaded to: {path}")
             dataset_files = list(Path(path).glob("*"))
-            for file in dataset_files:
-                dest = self.raw_dir / file.name
-                if not dest.exists():
-                    shutil.copy2(file, dest)
-                    logger.info(f"Copied {file.name} to {dest}")
-            
-            return str(self.raw_dir)
-        
+            return dataset_files
         except Exception as e:
-            logger.error(f"Failed to download dataset: {e}")
+            log.error(f"Failed to download dataset: {e}")
             raise
-    
-    def load_metadata(self) -> pd.DataFrame:
-        """Load ArXiv metadata from downloaded dataset"""
-        json_file = self.raw_dir / "arxiv-metadata-oai-snapshot.json"
-        
-        if not json_file.exists():
-            logger.warning(f"Metadata file not found at {json_file}")
-            # Try to find any JSON file
-            json_files = list(self.raw_dir.glob("*.json"))
-            if json_files:
-                json_file = json_files[0]
-                logger.info(f"Using metadata file: {json_file}")
-            else:
-                raise FileNotFoundError("No metadata JSON file found in raw data directory")
-        
-        logger.info(f"Loading metadata from {json_file}")
-        
-        # Load JSON lines file
-        papers = []
-        with open(json_file, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f):
-                if line_num % 100000 == 0:
-                    logger.info(f"Loaded {line_num} papers...")
-                
-                if line.strip():  # Skip empty lines
-                    try:
-                        paper = json.loads(line)
-                        papers.append(paper)
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"Error parsing line {line_num}: {e}")
-                
-                # For initial exploration, limit to first 500k papers
-                if line_num >= 500000:
-                    logger.info("Loaded first 500,000 papers for exploration")
-                    break
-        
-        logger.info(f"Total papers loaded: {len(papers)}")
-        df = pd.DataFrame(papers)
-        return df
-    
+
+    #TODO: Delete
+    def load_metadata(self, json_file: str | Path | None = None, max_rows: int | None = 500000) -> pd.DataFrame:
+        """Load ArXiv metadata JSONL into a DataFrame (simple implementation)."""
+        json_path = Path(json_file) if json_file else self.raw_dir / "arxiv-metadata-oai-snapshot.json"
+        if not json_path.exists():
+            candidates = list(self.raw_dir.glob("*.json"))
+            if not candidates:
+                raise FileNotFoundError(f"No metadata JSON file found under {self.raw_dir}")
+            json_path = candidates[0]
+        log.info(f"Loading metadata from {json_path}")
+        return pd.read_json(json_path, lines=True, nrows=max_rows)
+
+    def load_json_data(self, json_file: str | Path, max_rows: int | None = 500000) -> pd.DataFrame:
+        return pd.read_json(json_file, lines=True, nrows=max_rows)
+
     def explore_categories(self, df: pd.DataFrame) -> Dict:
         """Explore and analyze all categories in the dataset"""
-        logger.info("Exploring ArXiv categories...")
+        log.info("Exploring ArXiv categories...")
         
         # Extract all categories
         all_categories = []
@@ -209,19 +150,13 @@ class ArxivDataPipeline:
         
         # Sort categories
         sorted_categories = dict(sorted(category_counts.items(), key=lambda x: x[1], reverse=True))
+    
+        log.info(f"Total unique categories: {len(category_counts)}")
+        log.info(f"Total category assignments: {sum(category_counts.values())}")
         
-        # Print analysis
-        logger.info(f"\n{'='*60}")
-        logger.info(f"ARXIV CATEGORIES ANALYSIS")
-        logger.info(f"{'='*60}")
-        logger.info(f"Total unique categories: {len(category_counts)}")
-        logger.info(f"Total category assignments: {sum(category_counts.values())}")
-        
-        logger.info(f"\n{'='*60}")
-        logger.info("TOP 50 CATEGORIES BY FREQUENCY:")
-        logger.info(f"{'='*60}")
+        log.info("TOP 50 CATEGORIES BY FREQUENCY:")
         for i, (cat, count) in enumerate(list(sorted_categories.items())[:50], 1):
-            logger.info(f"{i:3}. {cat:20} : {count:8,} papers")
+            log.info(f"{i:3}. {cat:20} : {count:8,} papers")
         
         # Identify NLP-related categories
         nlp_keywords = ['cl', 'lg', 'ai', 'ir', 'ml', 'computational', 'language', 
@@ -233,31 +168,23 @@ class ArxivDataPipeline:
             if any(keyword in cat_lower for keyword in nlp_keywords):
                 potential_nlp_categories.append((cat, category_counts[cat]))
         
-        logger.info(f"\n{'='*60}")
-        logger.info("POTENTIAL NLP-RELATED CATEGORIES:")
-        logger.info(f"{'='*60}")
+        log.info(f"\n{'='*60}")
+        log.info("POTENTIAL NLP-RELATED CATEGORIES:")
         for cat, count in sorted(potential_nlp_categories, key=lambda x: x[1], reverse=True):
-            logger.info(f"{cat:20} : {count:8,} papers")
-        
-        # Save category analysis to file
-        analysis_file = self.logs_dir / f"category_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            log.info(f"{cat:20} : {count:8,} papers")
+
         analysis_data = {
             "total_categories": len(category_counts),
             "total_assignments": sum(category_counts.values()),
             "all_categories": sorted_categories,
             "main_categories": main_categories,
             "potential_nlp_categories": dict(potential_nlp_categories)
-        }
-        
-        with open(analysis_file, 'w') as f:
-            json.dump(analysis_data, f, indent=2)
-        logger.info(f"\nCategory analysis saved to: {analysis_file}")
-        
+        }        
         return analysis_data
     
     def filter_nlp_papers(self, df: pd.DataFrame, categories: List[str]) -> pd.DataFrame:
         """Filter papers by specified categories"""
-        logger.info(f"Filtering papers for categories: {categories}")
+        log.info(f"Filtering papers for categories: {categories}")
         
         # Create a mask for papers that have any of the specified categories
         mask = df['categories'].apply(
@@ -265,7 +192,7 @@ class ArxivDataPipeline:
         )
         
         filtered_df = df[mask].copy()
-        logger.info(f"Found {len(filtered_df)} papers in specified categories")
+        log.info(f"Found {len(filtered_df)} papers in specified categories")
         
         # Add year extraction if available
         if 'update_date' in filtered_df.columns:
@@ -307,11 +234,11 @@ class ArxivDataPipeline:
             min_keyword_matches: Minimum number of keyword matches required
             target_papers: Stop filtering after finding this many papers (default 1000)
         """
-        logger.info("Starting advanced NLP paper filtering with early stopping...")
+        log.info("Starting advanced NLP paper filtering with early stopping...")
         original_count = len(df)
         
         # Step 1: Extract dates for sorting
-        logger.info("Extracting dates for chronological sorting...")
+        log.info("Extracting dates for chronological sorting...")
         if 'update_date' in df.columns:
             df['sort_date'] = pd.to_datetime(df['update_date'], errors='coerce')
         elif 'versions' in df.columns:
@@ -320,27 +247,27 @@ class ArxivDataPipeline:
                 if pd.notna(x) else None
             )
         else:
-            logger.warning("No date field available for sorting")
+            log.warning("No date field available for sorting")
             df['sort_date'] = pd.NaT
         
         # Step 2: Category-based filtering (fast)
         if use_categories:
-            logger.info(f"Filtering by categories: {self.nlp_categories}")
+            log.info(f"Filtering by categories: {self.nlp_categories}")
             category_mask = df['categories'].apply(
                 lambda x: any(cat in x.split() if pd.notna(x) else [] for cat in self.nlp_categories)
             )
             df = df[category_mask].copy()
-            logger.info(f"After category filtering: {len(df):,} papers")
+            log.info(f"After category filtering: {len(df):,} papers")
         
         # Step 3: Sort by date (newest first)
         df = df.sort_values('sort_date', ascending=False, na_position='last')
-        logger.info(f"Sorted papers by date (newest first)")
+        log.info(f"Sorted papers by date (newest first)")
         
         # Step 4: Apply keyword filtering incrementally until we have enough papers
         filtered_papers = []
         
         if use_keywords:
-            logger.info(f"Applying keyword filtering incrementally (target: {target_papers} papers)...")
+            log.info(f"Applying keyword filtering incrementally (target: {target_papers} papers)...")
             
             batch_size = 1000  # Process in batches for efficiency
             total_processed = 0
@@ -371,11 +298,11 @@ class ArxivDataPipeline:
                         filtered_papers.append(paper_dict)
                         
                         if len(filtered_papers) >= target_papers:
-                            logger.info(f"Reached target of {target_papers} papers after processing {total_processed:,} papers")
+                            log.info(f"Reached target of {target_papers} papers after processing {total_processed:,} papers")
                             break
                 
                 if total_processed % 10000 == 0:
-                    logger.info(f"Processed {total_processed:,} papers, found {len(filtered_papers)} matching papers so far...")
+                    log.info(f"Processed {total_processed:,} papers, found {len(filtered_papers)} matching papers so far...")
             
             # Create dataframe from filtered papers
             if filtered_papers:
@@ -383,7 +310,7 @@ class ArxivDataPipeline:
             else:
                 filtered_df = pd.DataFrame()
                 
-            logger.info(f"After keyword filtering: {len(filtered_df):,} papers (processed {total_processed:,} papers)")
+            log.info(f"After keyword filtering: {len(filtered_df):,} papers (processed {total_processed:,} papers)")
         else:
             # No keyword filtering, just take top papers by date
             filtered_df = df.head(target_papers).copy()
@@ -398,11 +325,11 @@ class ArxivDataPipeline:
             if 'sort_date' in filtered_df.columns:
                 filtered_df['year'] = filtered_df['sort_date'].dt.year
         
-        logger.info(f"\nFiltering Summary:")
-        logger.info(f"Original papers: {original_count:,}")
-        logger.info(f"Papers after category filter: {len(df):,}")
-        logger.info(f"Final filtered papers: {len(filtered_df):,}")
-        logger.info(f"Early stopping saved processing: {len(df) - total_processed if use_keywords else 0:,} papers")
+        log.info(f"\nFiltering Summary:")
+        log.info(f"Original papers: {original_count:,}")
+        log.info(f"Papers after category filter: {len(df):,}")
+        log.info(f"Final filtered papers: {len(filtered_df):,}")
+        log.info(f"Early stopping saved processing: {len(df) - total_processed if use_keywords else 0:,} papers")
         
         return filtered_df
     
@@ -410,7 +337,7 @@ class ArxivDataPipeline:
         """
         Get the most recent papers from the filtered dataset
         """
-        logger.info(f"Selecting {limit} most recent papers...")
+        log.info(f"Selecting {limit} most recent papers...")
         
         # Sort by update date or version date
         if 'year' in df.columns:
@@ -428,16 +355,16 @@ class ArxivDataPipeline:
             
             latest_papers = df.sort_values(sort_columns, ascending=False).head(limit)
         else:
-            logger.warning("No date information available, selecting first papers")
+            log.warning("No date information available, selecting first papers")
             latest_papers = df.head(limit)
         
-        logger.info(f"Selected {len(latest_papers)} papers")
+        log.info(f"Selected {len(latest_papers)} papers")
         
         if 'year' in latest_papers.columns:
             year_dist = latest_papers['year'].value_counts().sort_index(ascending=False)
-            logger.info("Year distribution of selected papers:")
+            log.info("Year distribution of selected papers:")
             for year, count in year_dist.head(10).items():
-                logger.info(f"  {year}: {count} papers")
+                log.info(f"  {year}: {count} papers")
         
         return latest_papers
     
@@ -493,65 +420,65 @@ class ArxivDataPipeline:
             "year_distribution": df['year'].value_counts().to_dict() if 'year' in df.columns else {},
         }
         
-        logger.info(f"\n{'='*60}")
-        logger.info("FILTERED DATASET STATISTICS:")
-        logger.info(f"{'='*60}")
+        log.info(f"\n{'='*60}")
+        log.info("FILTERED DATASET STATISTICS:")
+        log.info(f"{'='*60}")
         for key, value in stats.items():
             if key != 'year_distribution':
-                logger.info(f"{key}: {value}")
+                log.info(f"{key}: {value}")
         
         if stats['year_distribution']:
-            logger.info("\nYear Distribution (top 10):")
+            log.info("\nYear Distribution (top 10):")
             for year, count in list(sorted(stats['year_distribution'].items(), reverse=True))[:10]:
-                logger.info(f"  {year}: {count} papers")
+                log.info(f"  {year}: {count} papers")
         
         return stats
 
 
-def main():
-    """Main execution function"""
-    pipeline = ArxivDataPipeline()
+# def main():
+#     """Main execution function"""
+#     pipeline = ArxivDataPipeline()
     
-    # Step 1: Download dataset
-    try:
-        dataset_path = pipeline.download_dataset()
-        logger.info(f"Dataset available at: {dataset_path}")
-    except Exception as e:
-        logger.error(f"Failed to download dataset: {e}")
-        return
+#     # Step 1: Download dataset
+#     try:
+#         dataset_path = pipeline.download_dataset()
+#         log.info(f"Dataset available at: {dataset_path}")
+#     except Exception as e:
+#         log.error(f"Failed to download dataset: {e}")
+#         return
     
-    # Step 2: Load metadata
-    try:
-        df = pipeline.load_metadata()
-        logger.info(f"Loaded {len(df)} papers from metadata")
-        logger.info(f"Columns: {df.columns.tolist()}")
-    except Exception as e:
-        logger.error(f"Failed to load metadata: {e}")
-        return
+#     # Step 2: Load metadata
+#     try:
+#         df = pipeline.load_metadata()
+#         log.info(f"Loaded {len(df)} papers from metadata")
+#         log.info(f"Columns: {df.columns.tolist()}")
+#     except Exception as e:
+#         log.error(f"Failed to load metadata: {e}")
+#         return
     
-    # Step 3: Explore categories
-    category_analysis = pipeline.explore_categories(df)
+#     # Step 3: Explore categories
+#     category_analysis = pipeline.explore_categories(df)
     
-    # Step 4: Show sample papers to understand structure
-    logger.info(f"\n{'='*60}")
-    logger.info("SAMPLE PAPER STRUCTURE:")
-    logger.info(f"{'='*60}")
-    if len(df) > 0:
-        sample_paper = df.iloc[0].to_dict()
-        for key, value in sample_paper.items():
-            if isinstance(value, str) and len(value) > 200:
-                value = value[:200] + "..."
-            logger.info(f"{key}: {value}")
+#     # Step 4: Show sample papers to understand structure
+#     log.info(f"\n{'='*60}")
+#     log.info("SAMPLE PAPER STRUCTURE:")
+#     log.info(f"{'='*60}")
+#     if len(df) > 0:
+#         sample_paper = df.iloc[0].to_dict()
+#         for key, value in sample_paper.items():
+#             if isinstance(value, str) and len(value) > 200:
+#                 value = value[:200] + "..."
+#             log.info(f"{key}: {value}")
     
-    logger.info("\n" + "="*60)
-    logger.info("NEXT STEPS:")
-    logger.info("="*60)
-    logger.info("1. Review the categories above to select NLP-related ones")
-    logger.info("2. Use filter_nlp_papers() with selected categories")
-    logger.info("3. Download PDFs for filtered papers")
-    logger.info("4. Convert PDFs to text format")
-    logger.info("5. Prepare for Elasticsearch ingestion")
+#     log.info("\n" + "="*60)
+#     log.info("NEXT STEPS:")
+#     log.info("="*60)
+#     log.info("1. Review the categories above to select NLP-related ones")
+#     log.info("2. Use filter_nlp_papers() with selected categories")
+#     log.info("3. Download PDFs for filtered papers")
+#     log.info("4. Convert PDFs to text format")
+#     log.info("5. Prepare for Elasticsearch ingestion")
 
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

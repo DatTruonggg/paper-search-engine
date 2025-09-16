@@ -1,0 +1,13 @@
+minio_client: 
+  endpoint: http://103.3.247.120:9000
+  access_key: minio
+  secret_key: minio123
+  secure: false
+  bucket_name: paper_engine
+  raw_prefix: raw
+  json_metadata_prefix: json_bucket
+  max_concurrent: 10
+  retry_attempts: 3
+  delay_between_requests: 0.5
+
+

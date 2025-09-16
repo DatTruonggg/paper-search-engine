@@ -93,3 +93,39 @@ class IngestResponse(BaseModel):
     processed: int
     errors: int
     took_ms: int = Field(alias="tookMs")
+
+#TOD: New
+# ----------------------- Agent: Summarization & QA -----------------------
+
+class SummarizeRequest(BaseModel):
+    # Either provide a query (multi-paper summary) or a paperId (single-paper)
+    query: Optional[str] = None
+    paper_id: Optional[str] = Field(None, alias="paperId")
+    top_k: int = Field(5, ge=1, le=20, alias="topK")
+    max_tokens: int = Field(700, ge=100, le=2000, alias="maxTokens")
+
+
+class SummarizeResponse(BaseModel):
+    success: bool
+    summary: Optional[str] = None
+    paper_id: Optional[str] = Field(None, alias="paperId")
+    title: Optional[str] = None
+    query: Optional[str] = None
+    sources: Optional[List[dict]] = None
+    error: Optional[str] = None
+
+
+class QARequest(BaseModel):
+    # Mode 1: single paper if paperId provided; Mode 2: multi-paper otherwise
+    question: str
+    paper_id: Optional[str] = Field(None, alias="paperId")
+    top_k: int = Field(5, ge=1, le=20, alias="topK")
+    max_tokens: int = Field(900, ge=100, le=2000, alias="maxTokens")
+
+
+class QAResponse(BaseModel):
+    success: bool
+    question: str
+    answer: Optional[str] = None
+    sources: Optional[List[dict]] = None
+    error: Optional[str] = None

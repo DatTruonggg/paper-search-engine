@@ -5,6 +5,7 @@ import asyncio
 
 from app.settings import settings
 from app.routers import search, chat, ingest
+from app.routers import agent as agent_router #TODO: New
 
 
 @asynccontextmanager
@@ -57,7 +58,7 @@ app.add_middleware(
 app.include_router(search.router)
 app.include_router(chat.router)  
 app.include_router(ingest.router)
-
+app.include_router(agent_router.router) #TODO: New
 
 @app.get("/")
 async def root():
