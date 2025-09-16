@@ -1,11 +1,5 @@
 """
 Configuration settings for Paper Search Engine Backend.
-<<<<<<< Updated upstream
-"""
-
-import os
-from typing import Optional
-=======
 
 Provides a `load_env` utility to load environment variables from common
 locations, including the project `.env` and ASTA agent secret files.
@@ -48,7 +42,6 @@ def load_env(extra_paths: Optional[Iterable[str]] = None) -> None:
                 load_dotenv(dotenv_path=str(Path(p)), override=False)
             except Exception:
                 pass
->>>>>>> Stashed changes
 
 
 class Config:
@@ -60,11 +53,7 @@ class Config:
     DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
 
     # Elasticsearch Configuration
-<<<<<<< Updated upstream
-    ES_HOST = os.getenv("ES_HOST", "localhost:9202")
-=======
     ES_HOST = os.getenv("ES_HOST", "https://9e264300b56f.ngrok-free.app")
->>>>>>> Stashed changes
     ES_INDEX_NAME = os.getenv("ES_INDEX_NAME", "papers")
 
     # BGE Embedding Configuration
@@ -82,8 +71,6 @@ class Config:
     # Data Paths
     MARKDOWN_DATA_PATH = os.getenv("MARKDOWN_DATA_PATH", "./data/processed/markdown")
     JSON_METADATA_PATH = os.getenv("JSON_METADATA_PATH", "/Users/admin/code/cazoodle/data/pdfs")
-<<<<<<< Updated upstream
-=======
     PDF_LOCAL_DIR = os.getenv("PDF_LOCAL_DIR", "/Users/admin/code/cazoodle/data/pdfs")
 
     # MinIO / Object Storage
@@ -122,7 +109,6 @@ class Config:
     # Feature Flags
     ENABLE_TOOL_CACHING = os.getenv("ENABLE_TOOL_CACHING", "false").lower() == "true"
     ENABLE_CONVERSATION_PERSISTENCE = os.getenv("ENABLE_CONVERSATION_PERSISTENCE", "false").lower() == "true"
->>>>>>> Stashed changes
 
 
 # Global configuration instance

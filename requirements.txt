@@ -1,9 +1,9 @@
 # Backend dependencies
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-pydantic==2.9.2
-pydantic-settings==2.5.2
-python-dotenv==1.0.1
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-dotenv
 
 transformers>=4.44.0
 torch>=2.3.0 ; platform_system != "Darwin" or platform_machine != "arm64"
@@ -18,35 +18,28 @@ elasticsearch-dsl>=8.0.0
 minio>=7.0.0
 
 # Data processing
-pandas==2.2.3
-numpy==1.26.4
+pandas
+numpy
 
 # Utilities
-python-dateutil==2.9.0
-tenacity==8.5.0
-tqdm==4.66.5
+python-dateutil
+tenacity
+tqdm
 tiktoken>=0.5.0
 
 openai
 google-genai
-aiohttp==3.10.5
+aiohttp
 
 # Document processing
-beautifulsoup4==4.12.3
-lxml==5.3.0
+beautifulsoup4
+lxml
 docling==2.51.0
 docling_core>=2.1.0
-Pillow>=10.4.0
+Pillow
 pypdfium2>=4.30.0
-
-# Development
-pytest==8.3.3
-pytest-asyncio==0.24.0
-black==24.8.0
-flake8==7.1.1
 
 # LlamaIndex dependencies
 llama-index
 llama-index-llms-gemini
 llama-index-embeddings-huggingface
-llama-index-tools-tool-spec

@@ -26,8 +26,7 @@ async def get_paper(paper_id: str):
     """
     Get detailed information about a specific paper.
     """
-    from backend.api.main import search_service as global_search_service
-    search_service = global_search_service
+    from backend.api.main import search_service
 
     if not search_service:
         raise HTTPException(status_code=503, detail="Search service not initialized")
@@ -71,8 +70,7 @@ async def find_similar_papers(paper_id: str, request: SimilarPapersRequest):
     """
     Find papers similar to a given paper.
     """
-    from backend.api.main import search_service as global_search_service
-    search_service = global_search_service
+    from backend.api.main import search_service
 
     if not search_service:
         raise HTTPException(status_code=503, detail="Search service not initialized")

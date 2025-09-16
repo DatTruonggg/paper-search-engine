@@ -7,7 +7,7 @@ Provides search functionality for papers with multiple search modes:
 - Search suggestions
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import logging
@@ -48,7 +48,7 @@ class SearchResponse(BaseModel):
 
 
 @router.post("/search", response_model=SearchResponse, tags=["Search"])
-async def search_papers(request: SearchRequest):
+async def search_papers(request: SearchRequest, req: Request = None):
     """
     Search for papers in title and abstract only.
 
@@ -61,17 +61,7 @@ async def search_papers(request: SearchRequest):
     Use /api/v1/search_full_papers to search within paper content.
     """
     from fastapi import Request
-    from backend.services import ElasticsearchSearchService
-
-    # Get search service from app state
-    # Note: This is a workaround since we can't inject Request directly in this structure
-    # The search_service will be available globally after startup
-    search_service = None
-    try:
-        from backend.api.main import search_service as global_search_service
-        search_service = global_search_service
-    except ImportError:
-        raise HTTPException(status_code=503, detail="Search service not initialized")
+    from backend.api.main import search_service
 
     if not search_service:
         raise HTTPException(status_code=503, detail="Search service not initialized")
@@ -131,8 +121,7 @@ async def search_full_papers(request: SearchRequest):
     Note: This endpoint searches in title, abstract, AND paper content (chunks).
     This provides deeper search but may be slower. Use /api/v1/search for title/abstract only.
     """
-    from backend.api.main import search_service as global_search_service
-    search_service = global_search_service
+    from backend.api.main import search_service
 
     if not search_service:
         raise HTTPException(status_code=503, detail="Search service not initialized")
@@ -189,8 +178,7 @@ async def search_suggestions(
     This is a simplified version - in production, you'd want to implement
     proper autocomplete with a dedicated suggestion index.
     """
-    from backend.api.main import search_service as global_search_service
-    search_service = global_search_service
+    from backend.api.main import search_service
 
     if not search_service:
         raise HTTPException(status_code=503, detail="Search service not initialized")
