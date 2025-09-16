@@ -271,6 +271,11 @@ class ESIndexer:
         # Build the search query
         should_clauses = []
 
+<<<<<<< Updated upstream
+=======
+        logger.info(f"Building ES query - BM25: {use_bm25}, Query: '{query}', Fields: {search_fields}")
+
+>>>>>>> Stashed changes
         # BM25 text search on chunks
         if use_bm25 and query:
             should_clauses.append({
@@ -278,9 +283,16 @@ class ESIndexer:
                     "query": query,
                     "fields": search_fields,
                     "type": "best_fields",
+<<<<<<< Updated upstream
                     "boost": 0.4  # 40% weight for BM25
                 }
             })
+=======
+                    "boost": 0.3  # 30% weight for BM25
+                }
+            })
+            logger.debug(f"Added BM25 clause with query: '{query}'")
+>>>>>>> Stashed changes
 
         # Semantic search
         if use_semantic and query_embedding is not None:
@@ -296,7 +308,11 @@ class ESIndexer:
                         "source": "cosineSimilarity(params.query_vector, 'title_embedding') + 1.0",
                         "params": {"query_vector": query_embedding}
                     },
+<<<<<<< Updated upstream
                     "boost": 0.3  # 30% weight for title semantic
+=======
+                    "boost": 0.4  # 40% weight for title semantic
+>>>>>>> Stashed changes
                 }
             })
 
@@ -308,7 +324,11 @@ class ESIndexer:
                         "source": "cosineSimilarity(params.query_vector, 'abstract_embedding') + 1.0",
                         "params": {"query_vector": query_embedding}
                     },
+<<<<<<< Updated upstream
                     "boost": 0.2  # 20% weight for abstract semantic
+=======
+                    "boost": 0.25  # 25% weight for abstract semantic
+>>>>>>> Stashed changes
                 }
             })
 
@@ -320,7 +340,11 @@ class ESIndexer:
                         "source": "cosineSimilarity(params.query_vector, 'chunk_embedding') + 1.0",
                         "params": {"query_vector": query_embedding}
                     },
+<<<<<<< Updated upstream
                     "boost": 0.6  # 60% weight for chunk semantic
+=======
+                    "boost": 0.35  # 35% weight for chunk semantic
+>>>>>>> Stashed changes
                 }
             })
 
@@ -358,6 +382,7 @@ class ESIndexer:
             "size": 0  # Only get aggregations
         }
 
+<<<<<<< Updated upstream
         # Execute search
         response = self.es.search(index=self.index_name, body=search_body)
 
@@ -369,6 +394,50 @@ class ESIndexer:
             paper_data['matching_chunks'] = bucket['doc_count']
             results.append(paper_data)
 
+=======
+        # Log the full query for debugging
+        import json
+        logger.debug(f"Full ES search query: {json.dumps(search_body, indent=2)}")
+
+        # Execute search
+        response = self.es.search(index=self.index_name, body=search_body)
+
+        logger.info(f"ES response - Total hits: {response.get('hits', {}).get('total', {}).get('value', 0) if isinstance(response.get('hits', {}).get('total', {}), dict) else response.get('hits', {}).get('total', 0)}")
+        logger.debug(f"ES response aggregations: {len(response.get('aggregations', {}).get('papers', {}).get('buckets', []))} paper buckets")
+
+        # Extract aggregated results
+        results = []
+        for i, bucket in enumerate(response['aggregations']['papers']['buckets']):
+            if i < 3:
+                logger.debug(f"Bucket {i}: paper_id={bucket['key']}, doc_count={bucket['doc_count']}, max_score={bucket['max_score']['value']}")
+
+            # Check if best_chunk has hits
+            if 'best_chunk' not in bucket or 'hits' not in bucket['best_chunk'] or 'hits' not in bucket['best_chunk']['hits']:
+                logger.warning(f"Bucket for paper {bucket['key']} has no best_chunk hits!")
+                continue
+
+            if len(bucket['best_chunk']['hits']['hits']) == 0:
+                logger.warning(f"Bucket for paper {bucket['key']} has empty hits array!")
+                continue
+
+            paper_data = bucket['best_chunk']['hits']['hits'][0]['_source']
+            paper_data['_score'] = bucket['max_score']['value']
+            paper_data['matching_chunks'] = bucket['doc_count']
+
+            # Log all fields in the first paper for debugging
+            if i == 0:
+                logger.info(f"First paper data keys: {list(paper_data.keys())}")
+                logger.info(f"First paper - paper_id: {paper_data.get('paper_id')}, title: {paper_data.get('title', 'N/A')[:50]}")
+                logger.info(f"First paper - categories: {paper_data.get('categories')}, authors: {paper_data.get('authors')}")
+
+            results.append(paper_data)
+
+            if i < 3:
+                logger.debug(f"Extracted paper {i}: id={paper_data.get('paper_id')}, title={paper_data.get('title', 'N/A')[:50]}")
+
+        logger.info(f"Extracted {len(results)} papers from {len(response['aggregations']['papers']['buckets'])} buckets")
+
+>>>>>>> Stashed changes
         # Sort by score descending
         results.sort(key=lambda x: x['_score'], reverse=True)
 

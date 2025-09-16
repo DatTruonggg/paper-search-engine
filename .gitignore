@@ -31,6 +31,10 @@ ENV/
 .env
 .env.local
 .env.*.local
+<<<<<<< Updated upstream
+=======
+myenv/
+>>>>>>> Stashed changes
 
 # IDE
 .vscode/
