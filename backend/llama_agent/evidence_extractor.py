@@ -3,7 +3,6 @@ Evidence extraction service for LlamaIndex agent.
 Finds relevant text chunks from papers to support search queries.
 """
 
-import logging
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
@@ -11,8 +10,7 @@ import asyncio
 
 from backend.services import ElasticsearchSearchService
 from data_pipeline.bge_embedder import BGEEmbedder
-
-logger = logging.getLogger(__name__)
+from logs import log
 
 
 @dataclass
@@ -79,7 +77,7 @@ class EvidenceExtractor:
         Returns:
             List of PaperWithEvidence objects
         """
-        logger.info(f"Extracting evidence for {len(papers)} papers with query: '{query}'")
+        log.info(f"Extracting evidence for {len(papers)} papers with query: '{query}'")
 
         # Generate query embedding once
         query_embedding = self.embedder.encode(query)
@@ -93,11 +91,11 @@ class EvidenceExtractor:
                 if paper_with_evidence:
                     results.append(paper_with_evidence)
             except Exception as e:
-                logger.warning(f"Failed to extract evidence for paper {paper.get('paper_id', 'unknown')}: {e}")
+                log.warning(f"Failed to extract evidence for paper {paper.get('paper_id', 'unknown')}: {e}")
                 # Still include paper without evidence chunks
                 results.append(self._create_paper_without_evidence(paper))
 
-        logger.info(f"Evidence extraction completed for {len(results)} papers")
+        log.info(f"Evidence extraction completed for {len(results)} papers")
         return results
 
     async def _extract_paper_evidence(
@@ -119,19 +117,19 @@ class EvidenceExtractor:
         """
         paper_id = paper.get('paper_id')
         if not paper_id:
-            logger.warning("Paper missing paper_id, skipping evidence extraction")
+            log.warning("Paper missing paper_id, skipping evidence extraction")
             return self._create_paper_without_evidence(paper)
 
         # Get paper details with all chunks
         paper_details = self.es_service.get_paper_details(paper_id)
         if not paper_details:
-            logger.warning(f"Could not retrieve details for paper {paper_id}")
+            log.warning(f"Could not retrieve details for paper {paper_id}")
             return self._create_paper_without_evidence(paper)
 
         # Get individual chunks for this paper
         chunks = await self._get_paper_chunks(paper_id)
         if not chunks:
-            logger.warning(f"No chunks found for paper {paper_id}")
+            log.warning(f"No chunks found for paper {paper_id}")
             return self._create_paper_without_evidence(paper)
 
         # Score chunks against query
@@ -194,11 +192,11 @@ class EvidenceExtractor:
                     'chunk_embedding': source.get('chunk_embedding', [])
                 })
 
-            logger.debug(f"Retrieved {len(chunks)} chunks for paper {paper_id}")
+            log.debug(f"Retrieved {len(chunks)} chunks for paper {paper_id}")
             return chunks
 
         except Exception as e:
-            logger.error(f"Failed to retrieve chunks for paper {paper_id}: {e}")
+            log.error(f"Failed to retrieve chunks for paper {paper_id}: {e}")
             return []
 
     def _score_and_select_chunks(
@@ -221,7 +219,7 @@ class EvidenceExtractor:
         for chunk in chunks:
             chunk_embedding = chunk.get('chunk_embedding', [])
             if not chunk_embedding or len(chunk_embedding) == 0:
-                logger.debug(f"Chunk {chunk.get('chunk_index')} missing embedding, skipping")
+                log.debug(f"Chunk {chunk.get('chunk_index')} missing embedding, skipping")
                 continue
 
             try:
@@ -244,14 +242,14 @@ class EvidenceExtractor:
                     scored_chunks.append(evidence_chunk)
 
             except Exception as e:
-                logger.warning(f"Failed to score chunk {chunk.get('chunk_index')}: {e}")
+                log.warning(f"Failed to score chunk {chunk.get('chunk_index')}: {e}")
                 continue
 
         # Sort by relevance score (highest first) and take top N
         scored_chunks.sort(key=lambda x: x.relevance_score, reverse=True)
         selected_chunks = scored_chunks[:self.max_chunks_per_paper]
 
-        logger.debug(f"Selected {len(selected_chunks)} evidence chunks from {len(chunks)} total chunks")
+        log.debug(f"Selected {len(selected_chunks)} evidence chunks from {len(chunks)} total chunks")
         return selected_chunks
 
     def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
@@ -278,7 +276,7 @@ class EvidenceExtractor:
             return float(similarity)
 
         except Exception as e:
-            logger.warning(f"Cosine similarity calculation failed: {e}")
+            log.warning(f"Cosine similarity calculation failed: {e}")
             return 0.0
 
     def _create_paper_without_evidence(self, paper: Dict[str, Any]) -> PaperWithEvidence:
@@ -320,4 +318,4 @@ class EvidenceExtractor:
         if min_relevance_score is not None:
             self.min_relevance_score = min_relevance_score
 
-        logger.info(f"Updated extraction params: max_chunks={self.max_chunks_per_paper}, min_score={self.min_relevance_score}")
+        log.info(f"Updated extraction params: max_chunks={self.max_chunks_per_paper}, min_score={self.min_relevance_score}")

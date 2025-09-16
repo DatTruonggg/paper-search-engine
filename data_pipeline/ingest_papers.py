@@ -7,7 +7,7 @@ Combines document chunking, BGE embedding, and ES indexing.
 import os
 import sys
 import argparse
-import logging
+from logs import log
 from pathlib import Path
 from typing import Dict, List, Optional
 import re
@@ -22,9 +22,6 @@ from data_pipeline.bge_embedder import BGEEmbedder
 from data_pipeline.document_chunker import DocumentChunker
 from data_pipeline.es_indexer import ESIndexer
 from data_pipeline.minio_storage import MinIOStorage
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
 class PaperProcessor:
@@ -50,7 +47,7 @@ class PaperProcessor:
             minio_endpoint: MinIO server endpoint
             enable_minio: Whether to enable MinIO storage
         """
-        logger.info("Initializing paper processor...")
+        log.info("Initializing paper processor...")
 
         # Store configuration
         self.json_metadata_dir = Path(json_metadata_dir)
@@ -66,12 +63,12 @@ class PaperProcessor:
         if enable_minio:
             try:
                 self.minio_storage = MinIOStorage(endpoint=minio_endpoint)
-                logger.info("MinIO storage initialized")
+                log.info("MinIO storage initialized")
             except Exception as e:
-                logger.warning(f"Failed to initialize MinIO storage: {e}")
-                logger.warning("Continuing without MinIO storage")
+                log.warning(f"Failed to initialize MinIO storage: {e}")
+                log.warning("Continuing without MinIO storage")
 
-        logger.info("Paper processor initialized successfully")
+        log.info("Paper processor initialized successfully")
 
     def load_json_metadata(self, paper_id: str, json_dir: Path) -> Dict:
         """
@@ -87,7 +84,7 @@ class PaperProcessor:
         json_path = json_dir / f"{paper_id}.json"
 
         if not json_path.exists():
-            logger.warning(f"JSON metadata not found: {json_path}")
+            log.warning(f"JSON metadata not found: {json_path}")
             return {}
 
         try:
@@ -129,7 +126,7 @@ class PaperProcessor:
             }
 
         except Exception as e:
-            logger.error(f"Error reading JSON metadata {json_path}: {e}")
+            log.error(f"Error reading JSON metadata {json_path}: {e}")
             return {}
 
     def extract_metadata_from_markdown(self, markdown_path: Path) -> Dict:
@@ -145,7 +142,7 @@ class PaperProcessor:
         try:
             content = markdown_path.read_text(encoding='utf-8')
         except Exception as e:
-            logger.error(f"Error reading {markdown_path}: {e}")
+            log.error(f"Error reading {markdown_path}: {e}")
             return {}
 
         # Extract paper ID from filename (e.g., "2210.14275.md")
@@ -258,7 +255,7 @@ class PaperProcessor:
             # Extract metadata
             paper_data = self.extract_metadata_from_markdown(markdown_path)
             if not paper_data:
-                logger.error(f"Failed to extract metadata from {markdown_path}")
+                log.error(f"Failed to extract metadata from {markdown_path}")
                 return None
 
             paper_id = paper_data['paper_id']
@@ -332,14 +329,14 @@ class PaperProcessor:
                         if minio_md_url:
                             chunk_doc['minio_markdown_url'] = minio_md_url
 
-                    logger.info(f"Uploaded files to MinIO for paper: {paper_id}")
+                    log.info(f"Uploaded files to MinIO for paper: {paper_id}")
                 except Exception as e:
-                    logger.warning(f"MinIO upload failed for {paper_id}: {e}")
+                    log.warning(f"MinIO upload failed for {paper_id}: {e}")
 
             return chunk_documents
 
         except Exception as e:
-            logger.error(f"Error processing {markdown_path}: {e}")
+            log.error(f"Error processing {markdown_path}: {e}")
             return None
 
     def ingest_directory(
@@ -365,7 +362,7 @@ class PaperProcessor:
         if max_files:
             markdown_files = markdown_files[:max_files]
 
-        logger.info(f"Found {len(markdown_files)} markdown files to process")
+        log.info(f"Found {len(markdown_files)} markdown files to process")
 
         # Create index
         self.indexer.create_index(force=False)
@@ -377,7 +374,7 @@ class PaperProcessor:
                 if md_file.stem == resume_from:
                     start_index = i
                     break
-            logger.info(f"Resuming from {resume_from} (index {start_index})")
+            log.info(f"Resuming from {resume_from} (index {start_index})")
 
         # Process files in batches
         processed_count = 0
@@ -396,33 +393,33 @@ class PaperProcessor:
                 if len(batch) >= batch_size:
                     try:
                         self.indexer.bulk_index(batch)
-                        logger.info(f"Indexed batch of {len(batch)} chunk documents")
+                        log.info(f"Indexed batch of {len(batch)} chunk documents")
                         batch = []
                     except Exception as e:
-                        logger.error(f"Error indexing batch: {e}")
+                        log.error(f"Error indexing batch: {e}")
                         # Try individual indexing for this batch
                         for doc in batch:
                             try:
                                 self.indexer.index_document(doc)
                             except Exception as e2:
-                                logger.error(f"Error indexing chunk from {doc.get('paper_id', 'unknown')}: {e2}")
+                                log.error(f"Error indexing chunk from {doc.get('paper_id', 'unknown')}: {e2}")
                         batch = []
             else:
-                logger.warning(f"Failed to process {md_file}")
+                log.warning(f"Failed to process {md_file}")
 
         # Index remaining documents
         if batch:
             try:
                 self.indexer.bulk_index(batch)
-                logger.info(f"Indexed final batch of {len(batch)} documents")
+                log.info(f"Indexed final batch of {len(batch)} documents")
             except Exception as e:
-                logger.error(f"Error indexing final batch: {e}")
+                log.error(f"Error indexing final batch: {e}")
 
-        logger.info(f"Ingestion completed. Processed {processed_count} papers")
+        log.info(f"Ingestion completed. Processed {processed_count} papers")
 
         # Print index statistics
         stats = self.indexer.get_index_stats()
-        logger.info(f"Index statistics: {stats}")
+        log.info(f"Index statistics: {stats}")
 
 
 def main():
@@ -492,7 +489,7 @@ def main():
 
     # Check if markdown directory exists
     if not args.markdown_dir.exists():
-        logger.error(f"Markdown directory does not exist: {args.markdown_dir}")
+        log.error(f"Markdown directory does not exist: {args.markdown_dir}")
         sys.exit(1)
 
     # Initialize processor

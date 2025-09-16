@@ -2,13 +2,12 @@
 Response builder module for formatting search results with evidence chunks.
 """
 
-import logging
+from logs import log
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
 from .config import llama_config
 
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -54,7 +53,7 @@ class ResponseBuilder:
             FormattedResponse with formatted results and evidence chunks
         """
         try:
-            logger.info(f"Building response for {len(all_results)} results")
+            log.info(f"Building response for {len(all_results)} results")
 
             # Deduplicate and rank results
             unique_papers = self._deduplicate_papers(all_results)
@@ -66,7 +65,7 @@ class ResponseBuilder:
             # Extract evidence chunks if extractor is available
             formatted_papers = []
             if self.evidence_extractor and top_papers:
-                logger.info(f"Extracting evidence for {len(top_papers)} papers")
+                log.info(f"Extracting evidence for {len(top_papers)} papers")
                 papers_with_evidence = await self.evidence_extractor.extract_evidence(
                     top_papers, query
                 )
@@ -108,7 +107,7 @@ class ResponseBuilder:
             )
 
         except Exception as e:
-            logger.error(f"Failed to build response: {e}")
+            log.error(f"Failed to build response: {e}")
             return FormattedResponse(
                 success=False,
                 query=query,

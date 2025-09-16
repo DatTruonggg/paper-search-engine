@@ -2,7 +2,6 @@
 Elasticsearch-based search service for paper search engine.
 """
 
-import logging
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 import numpy as np
@@ -16,8 +15,7 @@ from data_pipeline.bge_embedder import BGEEmbedder
 from data_pipeline.es_indexer import ESIndexer
 from backend.config import config
 
-logger = logging.getLogger(__name__)
-
+from logs import log
 
 @dataclass
 class SearchResult:
@@ -80,7 +78,7 @@ class ElasticsearchSearchService:
             bge_model: BGE model name
             bge_cache_dir: Cache directory for BGE model
         """
-        logger.info(f"Initializing Elasticsearch search service...")
+        log.info(f"Initializing Elasticsearch search service...")
 
         # Initialize BGE embedder
         self.embedder = BGEEmbedder(
@@ -95,7 +93,7 @@ class ElasticsearchSearchService:
             embedding_dim=self.embedder.embedding_dim,
         )
 
-        logger.info("Search service initialized successfully")
+        log.info("Search service initialized successfully")
 
     def search(
         self,
@@ -124,20 +122,20 @@ class ElasticsearchSearchService:
         Returns:
             List of SearchResult with normalized scores in [0, 1].
         """
-        logger.info(f"Searching for: '{query}' (mode: {search_mode}, include_chunks: {include_chunks})")
+        log.info(f"Searching for: '{query}' (mode: {search_mode}, include_chunks: {include_chunks})")
 
         # Generate query embedding for semantic search
         query_embedding = None
         if search_mode in ["hybrid", "semantic"]:
             query_embedding = self.embedder.encode(query)
-            logger.debug(f"Generated query embedding with shape: {query_embedding.shape if hasattr(query_embedding, 'shape') else 'unknown'}")
+            log.debug(f"Generated query embedding with shape: {query_embedding.shape if hasattr(query_embedding, 'shape') else 'unknown'}")
 
         # Configure search based on mode
         search_fields = self._get_search_fields(search_mode, include_chunks)
         use_semantic = search_mode in ["hybrid", "semantic"]
         use_bm25 = search_mode in ["hybrid", "fulltext"]
 
-        logger.info(f"Search config - Fields: {search_fields}, Semantic: {use_semantic}, BM25: {use_bm25}")
+        log.info(f"Search config - Fields: {search_fields}, Semantic: {use_semantic}, BM25: {use_bm25}")
 
         # Perform search
         raw_results = self.indexer.search(
@@ -149,25 +147,25 @@ class ElasticsearchSearchService:
             use_bm25=use_bm25
         )
 
-        logger.info(f"ES returned {len(raw_results)} raw results")
+        log.info(f"ES returned {len(raw_results)} raw results")
 
         # Convert to SearchResult objects
         results = []
-        logger.info(f"Processing {len(raw_results)} raw results...")
-        logger.info(f"Active filters - categories: {categories}, author: {author}, date_from: {date_from}, date_to: {date_to}")
+        log.info(f"Processing {len(raw_results)} raw results...")
+        log.info(f"Active filters - categories: {categories}, author: {author}, date_from: {date_from}, date_to: {date_to}")
 
         for i, hit in enumerate(raw_results):
             # Debug first few results
             if i < 3:
-                logger.info(f"Raw result {i}: paper_id={hit.get('paper_id', 'N/A')}, title={hit.get('title', 'N/A')[:50]}, score={hit.get('_score', 0)}")
+                log.info(f"Raw result {i}: paper_id={hit.get('paper_id', 'N/A')}, title={hit.get('title', 'N/A')[:50]}, score={hit.get('_score', 0)}")
 
             # Apply filters
             # if categories and not any(cat in hit.get('categories', []) for cat in categories):
-            #     logger.info(f"Filtered out {hit.get('paper_id', 'unknown')} - categories mismatch. Looking for {categories}, found {hit.get('categories', [])}")
+            #     log.info(f"Filtered out {hit.get('paper_id', 'unknown')} - categories mismatch. Looking for {categories}, found {hit.get('categories', [])}")
             #     continue
 
             if author and author.lower() not in ' '.join(hit.get('authors', [])).lower():
-                logger.info(f"Filtered out {hit.get('paper_id', 'unknown')} - author mismatch. Looking for '{author}', found {hit.get('authors', [])}")
+                log.info(f"Filtered out {hit.get('paper_id', 'unknown')} - author mismatch. Looking for '{author}', found {hit.get('authors', [])}")
                 continue
 
             # Check date range
@@ -175,10 +173,10 @@ class ElasticsearchSearchService:
                 pub_date = hit.get('publish_date')
                 if pub_date:
                     if date_from and pub_date < date_from:
-                        logger.debug(f"Filtered out {hit.get('paper_id', 'unknown')} - date too old")
+                        log.debug(f"Filtered out {hit.get('paper_id', 'unknown')} - date too old")
                         continue
                     if date_to and pub_date > date_to:
-                        logger.debug(f"Filtered out {hit.get('paper_id', 'unknown')} - date too recent")
+                        log.debug(f"Filtered out {hit.get('paper_id', 'unknown')} - date too recent")
                         continue
 
             # Create result - ensure paper_id is a string
@@ -187,15 +185,15 @@ class ElasticsearchSearchService:
 
             # Log what we got for debugging
             if i < 5:
-                logger.info(f"Processing result {i}: paper_id='{paper_id}' (type: {type(hit.get('paper_id'))}), title='{title[:50] if title else 'None'}'")
+                log.info(f"Processing result {i}: paper_id='{paper_id}' (type: {type(hit.get('paper_id'))}), title='{title[:50] if title else 'None'}'")
 
             # Skip results without paper_id or title
             if not paper_id or paper_id == '':
-                logger.info(f"Skipping result {i} - missing paper_id. Raw value: {hit.get('paper_id')}, Keys available: {list(hit.keys())[:10]}")
+                log.info(f"Skipping result {i} - missing paper_id. Raw value: {hit.get('paper_id')}, Keys available: {list(hit.keys())[:10]}")
                 continue
 
             if not title or title == 'Untitled':
-                logger.info(f"Skipping result {i} - missing title for paper_id {paper_id}")
+                log.info(f"Skipping result {i} - missing title for paper_id {paper_id}")
                 continue
 
             result = SearchResult(
@@ -214,7 +212,7 @@ class ElasticsearchSearchService:
             results.append(result)
 
             if i < 3:
-                logger.debug(f"Added result {i}: {result.paper_id} - {result.title[:50]}")
+                log.debug(f"Added result {i}: {result.paper_id} - {result.title[:50]}")
 
             if len(results) >= max_results:
                 break
@@ -222,7 +220,7 @@ class ElasticsearchSearchService:
         # Normalize scores to 0-1 range
         results = self._normalize_scores(results, search_mode)
 
-        logger.info(f"Found {len(results)} results")
+        log.info(f"Found {len(results)} results")
         return results
 
     def get_paper_details(self, paper_id: str) -> Optional[PaperDetails]:
@@ -235,7 +233,7 @@ class ElasticsearchSearchService:
         Returns:
             PaperDetails if found, otherwise None.
         """
-        logger.info(f"Getting details for paper: {paper_id}")
+        log.info(f"Getting details for paper: {paper_id}")
 
         # Search for all chunks of this paper
         try:
@@ -259,7 +257,7 @@ class ElasticsearchSearchService:
             chunks = response['hits']['hits']
 
             if not chunks:
-                logger.warning(f"Paper not found: {paper_id}")
+                log.warning(f"Paper not found: {paper_id}")
                 return None
 
             # Get paper metadata from first chunk
@@ -292,7 +290,7 @@ class ElasticsearchSearchService:
             )
 
         except Exception as e:
-            logger.error(f"Error getting paper details: {e}")
+            log.error(f"Error getting paper details: {e}")
             return None
 
     def find_similar_papers(
@@ -310,12 +308,12 @@ class ElasticsearchSearchService:
         Returns:
             List of SearchResult excluding the reference paper.
         """
-        logger.info(f"Finding papers similar to: {paper_id}")
+        log.info(f"Finding papers similar to: {paper_id}")
 
         # Get the reference paper details
         paper = self.get_paper_details(paper_id)
         if not paper:
-            logger.warning(f"Reference paper not found: {paper_id}")
+            log.warning(f"Reference paper not found: {paper_id}")
             return []
 
         # Use title + abstract as query for similarity
@@ -403,7 +401,7 @@ class ElasticsearchSearchService:
                 stats['avg_chunks_per_paper'] = round(stats['total_chunks'] / unique_papers, 2)
 
         except Exception as e:
-            logger.error(f"Error getting additional stats: {e}")
+            log.error(f"Error getting additional stats: {e}")
 
         return stats
 

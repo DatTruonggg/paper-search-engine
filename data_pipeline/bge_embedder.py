@@ -10,11 +10,7 @@ from typing import List, Union
 from transformers import AutoTokenizer, AutoModel
 import torch.nn.functional as F
 from pathlib import Path
-import logging
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
+from logs import log
 
 class BGEEmbedder:
     def __init__(self, model_name: str = "BAAI/bge-large-en-v1.5", cache_dir: str = "./models"):
@@ -29,7 +25,7 @@ class BGEEmbedder:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Loading BGE model: {model_name}")
+        log.info(f"Loading BGE model: {model_name}")
 
         # Load tokenizer and model
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -47,11 +43,11 @@ class BGEEmbedder:
         self.model = self.model.to(self.device)
         self.model.eval()
 
-        logger.info(f"Model loaded successfully on {self.device}")
+        log.info(f"Model loaded successfully on {self.device}")
 
         # Get embedding dimension
         self.embedding_dim = self.model.config.hidden_size
-        logger.info(f"Embedding dimension: {self.embedding_dim}")
+        log.info(f"Embedding dimension: {self.embedding_dim}")
 
     def encode(
         self,
@@ -112,7 +108,7 @@ class BGEEmbedder:
             all_embeddings.append(embeddings.cpu().numpy())
 
             if show_progress and i + batch_size < len(texts):
-                logger.info(f"Processed {min(i + batch_size, len(texts))}/{len(texts)} texts")
+                log.info(f"Processed {min(i + batch_size, len(texts))}/{len(texts)} texts")
 
         # Concatenate all embeddings
         embeddings = np.vstack(all_embeddings)

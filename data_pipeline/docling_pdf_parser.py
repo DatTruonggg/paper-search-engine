@@ -1,36 +1,10 @@
-#!/usr/bin/env python3
-"""
-Docling-based PDF to Markdown Converter
-
-This script converts a directory of ArXiv PDFs into markdown files using Docling.
-It is designed for subsequent ingestion into Elasticsearch.
-
-Usage example:
-    python -m data_pipeline.docling_pdf_parser \
-        --input-dir "/Users/admin/code/cazoodle/data/pdfs" \
-        --output-dir "./data/processed/markdown" \
-        --overwrite false
-
-Notes:
-- Defaults are set to the user's absolute input directory and repo-local output.
-- Output content is Markdown exported by Docling and saved with .md extension.
-"""
-
 import argparse
-import logging
 from pathlib import Path
 from typing import Optional
 import json
 from datetime import datetime
-
+from logs import log
 from docling.document_converter import DocumentConverter
-
-
-def configure_logger(verbosity: int) -> None:
-    """Configure root logger based on verbosity level."""
-    level = logging.WARNING if verbosity == 0 else logging.INFO if verbosity == 1 else logging.DEBUG
-    logging.basicConfig(level=level, format='%(asctime)s - %(levelname)s - %(message)s')
-
 
 def export_pdf_to_markdown(converter: DocumentConverter, pdf_path: Path, markdown_path: Path) -> dict:
     """
@@ -98,16 +72,15 @@ def run(
 
     Returns run statistics for logging and testing.
     """
-    logger = logging.getLogger(__name__)
-    logger.info("Starting Docling PDF parsing pipeline…")
-    logger.info(f"Input: {input_dir}")
-    logger.info(f"Output: {output_dir}")
+    log.info("Starting Docling PDF parsing pipeline…")
+    log.info(f"Input: {input_dir}")
+    log.info(f"Output: {output_dir}")
 
     pdf_paths = discover_pdfs(input_dir, pattern)
     if limit is not None:
         pdf_paths = pdf_paths[: max(0, int(limit))]
 
-    logger.info(f"Discovered {len(pdf_paths)} PDF(s)")
+    log.info(f"Discovered {len(pdf_paths)} PDF(s)")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     converter = DocumentConverter()
@@ -126,10 +99,10 @@ def run(
         res = export_pdf_to_markdown(converter, pdf, markdown_path)
         if res["status"] == "ok":
             converted += 1
-            logger.debug(f"Converted: {pdf} -> {markdown_path} ({res['bytes']} bytes)")
+            log.debug(f"Converted: {pdf} -> {markdown_path} ({res['bytes']} bytes)")
         else:
             failed += 1
-            logger.warning(f"Failed: {pdf} -> {res.get('error', 'unknown error')}")
+            log.warning(f"Failed: {pdf} -> {res.get('error', 'unknown error')}")
 
     stats = {
         "input_dir": str(input_dir),
@@ -139,7 +112,7 @@ def run(
         "failed": failed,
     }
 
-    logger.info(
+    log.info(
         f"Completed. total={stats['total']} converted={converted} skipped={skipped} failed={failed}"
     )
     save_run_manifest(output_dir, stats)
@@ -188,7 +161,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Entry point for CLI execution."""
     args = parse_args()
-    configure_logger(args.verbose)
+    configure_log(args.verbose)
 
     input_dir = Path(args.input_dir).expanduser().resolve()
     output_dir = Path(args.output_dir).expanduser().resolve()

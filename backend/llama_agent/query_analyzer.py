@@ -3,7 +3,6 @@ Query analysis module using Gemini Flash 2.5 for understanding user intent.
 """
 
 import json
-import logging
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from pydantic import BaseModel, Field
@@ -11,10 +10,9 @@ from pydantic import BaseModel, Field
 from llama_index.llms.gemini import Gemini
 from llama_index.core.llms import ChatMessage
 from llama_index.core.program import LLMTextCompletionProgram
-
+from logs import log
 from .config import llama_config
 
-logger = logging.getLogger(__name__)
 
 
 # Pydantic models for LlamaIndex structured output
@@ -114,7 +112,7 @@ class QueryAnalyzer:
             AnalyzedQuery with extracted information
         """
         try:
-            logger.info(f"Analyzing query: {query}")
+            log.info(f"Analyzing query: {query}")
 
             # Use structured output program
             analysis: QueryAnalysisOutput = self.query_program(query=query)
@@ -131,11 +129,11 @@ class QueryAnalyzer:
                 search_strategy=analysis.search_strategy
             )
 
-            logger.info(f"Query analysis complete: type={result.query_type}")
+            log.info(f"Query analysis complete: type={result.query_type}")
             return result
 
         except Exception as e:
-            logger.error(f"Query analysis failed: {e}")
+            log.error(f"Query analysis failed: {e}")
             # Return basic analysis on error
             safe_keywords = query.split()[:5] if query else ["search"]
             return AnalyzedQuery(
@@ -165,7 +163,7 @@ class QueryAnalyzer:
             ResultEvaluation with quality assessment
         """
         try:
-            logger.info(f"Evaluating {len(results)} results for query: {query}")
+            log.info(f"Evaluating {len(results)} results for query: {query}")
 
             # Create simple summary of results
             results_summary = f"Found {len(results)} results. "
@@ -186,11 +184,11 @@ class QueryAnalyzer:
                 refinement_strategy=evaluation.refinement_strategy
             )
 
-            logger.info(f"Evaluation complete: score={result.quality_score}, needs_refinement={result.needs_refinement}")
+            log.info(f"Evaluation complete: score={result.quality_score}, needs_refinement={result.needs_refinement}")
             return result
 
         except Exception as e:
-            logger.error(f"Result evaluation failed: {e}")
+            log.error(f"Result evaluation failed: {e}")
             # Return basic evaluation on error - conservative approach
             avg_score = sum(r.get("score", 0) for r in results[:5]) / min(5, len(results)) if results else 0
             return ResultEvaluation(

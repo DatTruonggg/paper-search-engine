@@ -8,20 +8,12 @@ import os
 import asyncio
 import aiohttp
 import json
-import logging
+from logs import log
 from pathlib import Path
 from typing import List, Dict, Optional
 from datetime import datetime
 import time
 from tqdm.asyncio import tqdm
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 
 class ArxivPDFDownloader:
     def __init__(self, 
@@ -213,7 +205,7 @@ class ArxivPDFDownloader:
                 
                 # Log progress periodically
                 if len(results) % 100 == 0:
-                    logger.info(f"Progress: {len(results)}/{len(tasks)} - "
+                    log.info(f"Progress: {len(results)}/{len(tasks)} - "
                               f"Success: {self.stats['successful']}, "
                               f"Failed: {self.stats['failed']}, "
                               f"Skipped: {self.stats['skipped']}")
@@ -222,17 +214,17 @@ class ArxivPDFDownloader:
     
     def print_statistics(self):
         """Print download statistics"""
-        logger.info("\n" + "="*60)
-        logger.info("DOWNLOAD STATISTICS:")
-        logger.info("="*60)
-        logger.info(f"Total papers: {self.stats['total']}")
-        logger.info(f"Successfully downloaded: {self.stats['successful']}")
-        logger.info(f"Failed downloads: {self.stats['failed']}")
-        logger.info(f"Skipped (already exists): {self.stats['skipped']}")
+        log.info("\n" + "="*60)
+        log.info("DOWNLOAD STATISTICS:")
+        log.info("="*60)
+        log.info(f"Total papers: {self.stats['total']}")
+        log.info(f"Successfully downloaded: {self.stats['successful']}")
+        log.info(f"Failed downloads: {self.stats['failed']}")
+        log.info(f"Skipped (already exists): {self.stats['skipped']}")
         
         if self.stats['total'] > 0:
             success_rate = (self.stats['successful'] / self.stats['total']) * 100
-            logger.info(f"Success rate: {success_rate:.2f}%")
+            log.info(f"Success rate: {success_rate:.2f}%")
     
     def save_download_log(self, results: List[Dict], log_file: str = "../data/logs/download_log.json"):
         """Save download results to log file"""
@@ -246,7 +238,7 @@ class ArxivPDFDownloader:
                 "results": results
             }, f, indent=2)
         
-        logger.info(f"Download log saved to: {log_path}")
+        log.info(f"Download log saved to: {log_path}")
 
 
 async def download_sample_papers():
@@ -271,22 +263,22 @@ async def download_sample_papers():
 
 def main():
     """Main execution function"""
-    logger.info("Starting ArXiv PDF Downloader...")
+    log.info("Starting ArXiv PDF Downloader...")
     
     # Run sample download
     results = asyncio.run(download_sample_papers())
     
     # Print results
-    logger.info("\n" + "="*60)
-    logger.info("DOWNLOAD RESULTS:")
-    logger.info("="*60)
+    log.info("\n" + "="*60)
+    log.info("DOWNLOAD RESULTS:")
+    log.info("="*60)
     for result in results:
         if result['status'] == 'success':
-            logger.info(f"✓ {result['paper_id']}: Downloaded to {result['path']}")
+            log.info(f"✓ {result['paper_id']}: Downloaded to {result['path']}")
         elif result['status'] == 'skipped':
-            logger.info(f"⊙ {result['paper_id']}: {result['message']}")
+            log.info(f"⊙ {result['paper_id']}: {result['message']}")
         else:
-            logger.info(f"✗ {result['paper_id']}: {result.get('message', 'Failed')}")
+            log.info(f"✗ {result['paper_id']}: {result.get('message', 'Failed')}")
 
 
 if __name__ == "__main__":

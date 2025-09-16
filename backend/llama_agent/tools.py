@@ -2,15 +2,14 @@
 LlamaIndex tools for paper search, wrapping Elasticsearch service.
 """
 
-import logging
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
 from llama_index.core.tools import FunctionTool
 from backend.services import ElasticsearchSearchService
 from backend.config import config
+from logs import log
 
-logger = logging.getLogger(__name__)
 
 
 class PaperSearchInput(BaseModel):
@@ -76,8 +75,8 @@ class PaperSearchTool:
             Dictionary containing search results and metadata
         """
         try:
-            logger.info(f"Searching papers: query='{query}', mode={search_mode}, max_results={max_results}")
-            logger.debug(f"Additional params - categories: {categories}, date_from: {date_from}, date_to: {date_to}, author: {author}")
+            log.info(f"Searching papers: query='{query}', mode={search_mode}, max_results={max_results}")
+            log.debug(f"Additional params - categories: {categories}, date_from: {date_from}, date_to: {date_to}, author: {author}")
 
             # Execute search
             results = self.es_service.search(
@@ -91,7 +90,7 @@ class PaperSearchTool:
                 include_chunks=include_chunks
             )
 
-            logger.info(f"ES service returned {len(results)} results")
+            log.info(f"ES service returned {len(results)} results")
 
             # Format results for agent consumption
             papers = []
@@ -120,11 +119,11 @@ class PaperSearchTool:
                 }
             }
 
-            logger.info(f"Search completed: found {len(papers)} papers")
+            log.info(f"Search completed: found {len(papers)} papers")
             return response
 
         except Exception as e:
-            logger.error(f"Search failed: {e}")
+            log.error(f"Search failed: {e}")
             return {
                 "success": False,
                 "query": query,
@@ -143,7 +142,7 @@ class PaperSearchTool:
             Dictionary containing paper details
         """
         try:
-            logger.info(f"Getting details for paper: {paper_id}")
+            log.info(f"Getting details for paper: {paper_id}")
 
             details = self.es_service.get_paper_details(paper_id)
 
@@ -169,7 +168,7 @@ class PaperSearchTool:
                 }
 
         except Exception as e:
-            logger.error(f"Failed to get paper details: {e}")
+            log.error(f"Failed to get paper details: {e}")
             return {
                 "success": False,
                 "error": str(e)

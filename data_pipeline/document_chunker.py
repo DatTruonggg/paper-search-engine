@@ -8,11 +8,7 @@ import re
 from typing import List, Dict, Tuple
 from dataclasses import dataclass
 import tiktoken
-import logging
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
+from logs import log
 
 @dataclass
 class Chunk:
@@ -44,7 +40,7 @@ class DocumentChunker:
         self.chunk_overlap = chunk_overlap
         self.tokenizer = tiktoken.get_encoding(tokenizer_model)
 
-        logger.info(f"Initialized chunker: size={chunk_size}, overlap={chunk_overlap}")
+        log.info(f"Initialized chunker: size={chunk_size}, overlap={chunk_overlap}")
 
     def count_tokens(self, text: str) -> int:
         """Count tokens in text"""
@@ -274,7 +270,7 @@ class DocumentChunker:
                 for chunk in content_chunks
             ]
 
-            logger.info(f"Created {len(content_chunks)} chunks for paper {paper_data.get('paper_id', 'unknown')}")
+            log.info(f"Created {len(content_chunks)} chunks for paper {paper_data.get('paper_id', 'unknown')}")
         else:
             result['content_chunks'] = []
 

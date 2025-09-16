@@ -10,7 +10,6 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
 lib64/
 parts/
 sdist/
@@ -27,6 +26,8 @@ ENV/
 .venv/
 .ENV/
 
+node_modules/
+.next/
 # Environment variables
 .env
 .env.local
@@ -43,7 +44,6 @@ paper/
 
 # Logs
 *.log
-logs/
 
 # Cache
 .cache/

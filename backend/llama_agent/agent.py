@@ -2,7 +2,6 @@
 Main LlamaIndex ReAct agent for intelligent paper search.
 """
 
-import logging
 from typing import List, Dict, Any, Optional
 import asyncio
 
@@ -15,8 +14,7 @@ from .tools import PaperSearchTool
 from .query_analyzer import QueryAnalyzer, AnalyzedQuery
 from .response_builder import ResponseBuilder, FormattedResponse
 from .evidence_extractor import EvidenceExtractor
-
-logger = logging.getLogger(__name__)
+from logs import log
 
 
 class PaperSearchAgent:
@@ -133,7 +131,7 @@ class PaperSearchAgent:
             # Analyze query if enabled
             if llama_config.enable_query_analysis:
                 analysis = await self.query_analyzer.analyze_query(query)
-                logger.info(f"Query analysis: type={analysis.query_type}, keywords={analysis.keywords}")
+                log.info(f"Query analysis: type={analysis.query_type}, keywords={analysis.keywords}")
             else:
                 analysis = AnalyzedQuery(
                     original_query=query,
@@ -162,7 +160,7 @@ class PaperSearchAgent:
             return results
 
         except Exception as e:
-            logger.error(f"Search with analysis failed: {e}")
+            log.error(f"Search with analysis failed: {e}")
             return {
                 "success": False,
                 "error": str(e),
@@ -184,7 +182,7 @@ class PaperSearchAgent:
         Returns:
             Refined search results
         """
-        logger.info(f"Refining search: {refinement_strategy}")
+        log.info(f"Refining search: {refinement_strategy}")
 
         # Import refinement strategies
         from .config import REFINEMENT_STRATEGIES
@@ -199,12 +197,12 @@ class PaperSearchAgent:
         # Handle PARAPHRASE strategies
         if "paraphrase" in strategy_lower:
             modified_query = self._paraphrase_query(original_query, refinement_strategy)
-            logger.info(f"Paraphrased query: '{original_query}' → '{modified_query}'")
+            log.info(f"Paraphrased query: '{original_query}' → '{modified_query}'")
 
         # Handle FILTER strategies
         elif "filter" in strategy_lower:
             search_params = self._apply_filters(refinement_strategy)
-            logger.info(f"Applied filters: {search_params}")
+            log.info(f"Applied filters: {search_params}")
 
         # Handle MODE_CHANGE strategies
         elif "mode_change" in strategy_lower or "semantic" in strategy_lower:
@@ -216,7 +214,7 @@ class PaperSearchAgent:
                 override_mode = "title_only"
             elif "hybrid" in strategy_lower:
                 override_mode = "hybrid"
-            logger.info(f"Changed search mode to: {override_mode}")
+            log.info(f"Changed search mode to: {override_mode}")
 
         # Handle BROADEN strategies
         elif "broaden" in strategy_lower or "broader" in strategy_lower:
@@ -224,13 +222,13 @@ class PaperSearchAgent:
             words = original_query.split()
             modified_query = " ".join(words[:min(3, len(words))])
             override_mode = "semantic"  # Semantic search is better for broad queries
-            logger.info(f"Broadened query: '{original_query}' → '{modified_query}'")
+            log.info(f"Broadened query: '{original_query}' → '{modified_query}'")
 
         # Handle NARROW strategies
         elif "narrow" in strategy_lower:
             # Add more specific terms or switch to exact matching
             override_mode = "bm25"  # BM25 is better for specific term matching
-            logger.info(f"Narrowed search with BM25 mode")
+            log.info(f"Narrowed search with BM25 mode")
 
         # Execute refined search with parameters
         return await self._search_papers_with_analysis_params(
@@ -293,7 +291,7 @@ class PaperSearchAgent:
             # Analyze query if enabled
             if llama_config.enable_query_analysis:
                 analysis = await self.query_analyzer.analyze_query(query)
-                logger.info(f"Query analysis: type={analysis.query_type}, keywords={analysis.keywords}")
+                log.info(f"Query analysis: type={analysis.query_type}, keywords={analysis.keywords}")
             else:
                 analysis = AnalyzedQuery(
                     original_query=query,
@@ -327,7 +325,7 @@ class PaperSearchAgent:
             return results
 
         except Exception as e:
-            logger.error(f"Enhanced search failed: {e}")
+            log.error(f"Enhanced search failed: {e}")
             return {
                 "success": False,
                 "error": str(e),
@@ -379,7 +377,7 @@ class PaperSearchAgent:
             FormattedResponse with search results
         """
         try:
-            logger.info(f"Starting agent search for: {query}")
+            log.info(f"Starting agent search for: {query}")
 
             # Initialize search state
             all_results = []
@@ -401,7 +399,7 @@ class PaperSearchAgent:
 
                     # Perform refinement if needed
                     if evaluation.needs_refinement and iterations < llama_config.max_iterations:
-                        logger.info(f"Refining search: {evaluation.refinement_strategy}")
+                        log.info(f"Refining search: {evaluation.refinement_strategy}")
 
                         refined_results = await self._refine_search(
                             query,
@@ -436,13 +434,13 @@ class PaperSearchAgent:
                 search_iterations=iterations
             )
 
-            logger.info(
+            log.info(
                 f"Search completed: {response.total_found} papers found in {iterations} iterations"
             )
             return response
 
         except Exception as e:
-            logger.error(f"Agent search failed: {e}")
+            log.error(f"Agent search failed: {e}")
             return FormattedResponse(
                 success=False,
                 query=query,

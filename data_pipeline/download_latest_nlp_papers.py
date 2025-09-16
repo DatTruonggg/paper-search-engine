@@ -6,23 +6,11 @@ Uses advanced filtering with categories and keywords to find and download recent
 
 import asyncio
 import json
-import logging
+from logs import log
 from pathlib import Path
 from datetime import datetime
-from arxiv_nlp_pipeline import ArxivDataPipeline
-from arxiv_pdf_downloader import ArxivPDFDownloader
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('../data/logs/download_nlp_papers.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
+from .arxiv_nlp_pipeline import ArxivDataPipeline
+from .arxiv_pdf_downloader import ArxivPDFDownloader
 
 class NLPPaperDownloader:
     def __init__(self, data_dir: str = "../data"):
@@ -40,15 +28,15 @@ class NLPPaperDownloader:
         json_files = list(self.pipeline.raw_dir.glob("*.json"))
         
         if json_files:
-            logger.info(f"Found existing dataset at {json_files[0]}")
+            log.info(f"Found existing dataset at {json_files[0]}")
             return True
         else:
-            logger.info("Dataset not found, downloading from Kaggle...")
+            log.info("Dataset not found, downloading from Kaggle...")
             try:
                 self.pipeline.download_dataset()
                 return True
             except Exception as e:
-                logger.error(f"Failed to download dataset: {e}")
+                log.error(f"Failed to download dataset: {e}")
                 return False
     
     def process_full_dataset(self, limit_papers: int = None):
@@ -62,13 +50,13 @@ class NLPPaperDownloader:
             else:
                 raise FileNotFoundError("No metadata JSON file found")
         
-        logger.info(f"Loading full dataset from {json_file}")
+        log.info(f"Loading full dataset from {json_file}")
         
         papers = []
         with open(json_file, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f):
                 if line_num % 100000 == 0 and line_num > 0:
-                    logger.info(f"Loaded {line_num:,} papers...")
+                    log.info(f"Loaded {line_num:,} papers...")
                 
                 if line.strip():
                     try:
@@ -79,10 +67,10 @@ class NLPPaperDownloader:
                 
                 # Optional limit for testing
                 if limit_papers and line_num >= limit_papers:
-                    logger.info(f"Reached limit of {limit_papers:,} papers")
+                    log.info(f"Reached limit of {limit_papers:,} papers")
                     break
         
-        logger.info(f"Total papers loaded: {len(papers):,}")
+        log.info(f"Total papers loaded: {len(papers):,}")
         return papers
     
     async def find_and_download_nlp_papers(self, 
@@ -94,17 +82,17 @@ class NLPPaperDownloader:
         """
         Main function to find and download latest NLP papers
         """
-        logger.info("="*80)
-        logger.info("DOWNLOADING LATEST NLP PAPERS FROM ARXIV")
-        logger.info("="*80)
-        logger.info(f"Target papers: {num_papers}")
-        logger.info(f"Use categories: {use_categories}")
-        logger.info(f"Use keywords: {use_keywords}")
-        logger.info(f"Min keyword matches: {min_keyword_matches}")
+        log.info("="*80)
+        log.info("DOWNLOADING LATEST NLP PAPERS FROM ARXIV")
+        log.info("="*80)
+        log.info(f"Target papers: {num_papers}")
+        log.info(f"Use categories: {use_categories}")
+        log.info(f"Use keywords: {use_keywords}")
+        log.info(f"Min keyword matches: {min_keyword_matches}")
         
         # Step 1: Load dataset
         if not self.load_or_download_dataset():
-            logger.error("Failed to load dataset")
+            log.error("Failed to load dataset")
             return None
         
         # Step 2: Load papers into dataframe
@@ -112,10 +100,10 @@ class NLPPaperDownloader:
             import pandas as pd
             papers_data = self.process_full_dataset(limit_dataset)
             df = pd.DataFrame(papers_data)
-            logger.info(f"Created dataframe with {len(df):,} papers")
-            logger.info(f"Columns: {df.columns.tolist()}")
+            log.info(f"Created dataframe with {len(df):,} papers")
+            log.info(f"Columns: {df.columns.tolist()}")
         except Exception as e:
-            logger.error(f"Failed to load papers: {e}")
+            log.error(f"Failed to load papers: {e}")
             return None
         
         # Step 3: Filter NLP papers with early stopping
@@ -128,13 +116,13 @@ class NLPPaperDownloader:
                 min_keyword_matches=min_keyword_matches,
                 target_papers=num_papers  # Will stop after finding this many papers
             )
-            logger.info(f"Found {len(latest_papers):,} NLP papers")
+            log.info(f"Found {len(latest_papers):,} NLP papers")
         except Exception as e:
-            logger.error(f"Failed to filter papers: {e}")
+            log.error(f"Failed to filter papers: {e}")
             return None
         
         if len(latest_papers) == 0:
-            logger.error("No papers found after filtering")
+            log.error("No papers found after filtering")
             return None
         
         # Step 5: Analyze filtering results
@@ -142,7 +130,7 @@ class NLPPaperDownloader:
             analysis = self.pipeline.analyze_nlp_filtering_results(latest_papers)
             self.save_analysis(analysis, latest_papers)
         except Exception as e:
-            logger.warning(f"Failed to analyze results: {e}")
+            log.warning(f"Failed to analyze results: {e}")
         
         # Step 6: Prepare paper data for download
         papers_to_download = []
@@ -160,9 +148,9 @@ class NLPPaperDownloader:
             papers_to_download.append(paper_data)
         
         # Step 7: Download PDFs
-        logger.info("="*80)
-        logger.info("STARTING PDF DOWNLOADS")
-        logger.info("="*80)
+        log.info("="*80)
+        log.info("STARTING PDF DOWNLOADS")
+        log.info("="*80)
         
         try:
             results = await self.pdf_downloader.download_batch(papers_to_download)
@@ -182,11 +170,11 @@ class NLPPaperDownloader:
                     'papers': successful_papers
                 }, f, indent=2)
             
-            logger.info(f"Download complete! Check {success_file} for details")
+            log.info(f"Download complete! Check {success_file} for details")
             return results
             
         except Exception as e:
-            logger.error(f"Failed to download PDFs: {e}")
+            log.error(f"Failed to download PDFs: {e}")
             return None
     
     def save_analysis(self, analysis: dict, papers_df):
@@ -216,29 +204,29 @@ class NLPPaperDownloader:
                 'sample_papers': papers_df.head(10)[['id', 'title', 'categories', 'matched_nlp_keywords']].to_dict('records')
             }, f, indent=2)
         
-        logger.info(f"Analysis saved to {analysis_file}")
+        log.info(f"Analysis saved to {analysis_file}")
         
         # Print key statistics
-        logger.info("\n" + "="*60)
-        logger.info("NLP FILTERING ANALYSIS")
-        logger.info("="*60)
-        logger.info(f"Total filtered papers: {analysis.get('total_papers', 0):,}")
-        logger.info(f"Papers with abstracts: {analysis.get('papers_with_abstract', 0):,}")
+        log.info("\n" + "="*60)
+        log.info("NLP FILTERING ANALYSIS")
+        log.info("="*60)
+        log.info(f"Total filtered papers: {analysis.get('total_papers', 0):,}")
+        log.info(f"Papers with abstracts: {analysis.get('papers_with_abstract', 0):,}")
         
         if 'top_keywords' in analysis:
-            logger.info("\nTop matched keywords:")
+            log.info("\nTop matched keywords:")
             for keyword, count in list(analysis['top_keywords'].items())[:10]:
-                logger.info(f"  {keyword}: {count}")
+                log.info(f"  {keyword}: {count}")
         
         if 'top_categories' in analysis:
-            logger.info("\nTop categories:")
+            log.info("\nTop categories:")
             for category, count in list(analysis['top_categories'].items())[:10]:
-                logger.info(f"  {category}: {count}")
+                log.info(f"  {category}: {count}")
         
         if 'year_distribution' in analysis:
-            logger.info("\nYear distribution:")
+            log.info("\nYear distribution:")
             for year, count in list(analysis['year_distribution'].items())[:5]:
-                logger.info(f"  {year}: {count}")
+                log.info(f"  {year}: {count}")
 
 
 async def main():
@@ -252,7 +240,7 @@ async def main():
     MIN_KEYWORD_MATCHES = 1
     LIMIT_DATASET = None  # Set to None for full dataset, or number for testing
     
-    logger.info("Starting NLP paper download process...")
+    log.info("Starting NLP paper download process...")
     
     results = await downloader.find_and_download_nlp_papers(
         num_papers=NUM_PAPERS,
@@ -264,12 +252,12 @@ async def main():
     
     if results:
         successful = sum(1 for r in results if r.get('status') == 'success')
-        logger.info(f"\n✓ Download process completed!")
-        logger.info(f"✓ Successfully downloaded {successful}/{len(results)} papers")
-        logger.info(f"✓ PDFs saved to: {downloader.pipeline.pdfs_dir}")
-        logger.info(f"✓ Logs saved to: {downloader.pipeline.logs_dir}")
+        log.info(f"\n✓ Download process completed!")
+        log.info(f"✓ Successfully downloaded {successful}/{len(results)} papers")
+        log.info(f"✓ PDFs saved to: {downloader.pipeline.pdfs_dir}")
+        log.info(f"✓ Logs saved to: {downloader.pipeline.logs_dir}")
     else:
-        logger.error("Download process failed!")
+        log.error("Download process failed!")
 
 
 if __name__ == "__main__":

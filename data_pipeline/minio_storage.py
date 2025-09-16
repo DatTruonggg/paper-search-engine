@@ -2,7 +2,7 @@
 MinIO storage client for PDF and markdown file management.
 """
 
-import logging
+from logs import log
 from pathlib import Path
 from typing import Optional, Dict, Any
 import minio
@@ -10,7 +10,6 @@ from minio import Minio
 from minio.error import S3Error
 import os
 
-logger = logging.getLogger(__name__)
 
 
 class MinIOStorage:
@@ -48,7 +47,7 @@ class MinIOStorage:
             secure=secure
         )
 
-        logger.info(f"MinIO client initialized: {endpoint}")
+        log.info(f"MinIO client initialized: {endpoint}")
         self._ensure_buckets_exist()
 
     def _ensure_buckets_exist(self):
@@ -57,11 +56,11 @@ class MinIOStorage:
             try:
                 if not self.client.bucket_exists(bucket):
                     self.client.make_bucket(bucket)
-                    logger.info(f"Created MinIO bucket: {bucket}")
+                    log.info(f"Created MinIO bucket: {bucket}")
                 else:
-                    logger.info(f"MinIO bucket exists: {bucket}")
+                    log.info(f"MinIO bucket exists: {bucket}")
             except S3Error as e:
-                logger.error(f"Error with bucket {bucket}: {e}")
+                log.error(f"Error with bucket {bucket}: {e}")
                 raise
 
     def upload_pdf(self, paper_id: str, pdf_path: Path) -> Optional[str]:
@@ -76,7 +75,7 @@ class MinIOStorage:
             MinIO URL for the uploaded file or None if failed
         """
         if not pdf_path.exists():
-            logger.warning(f"PDF file not found: {pdf_path}")
+            log.warning(f"PDF file not found: {pdf_path}")
             return None
 
         object_name = f"{paper_id}.pdf"
@@ -92,11 +91,11 @@ class MinIOStorage:
 
             # Generate URL
             minio_url = f"http://{self.endpoint}/{self.pdf_bucket}/{object_name}"
-            logger.info(f"Uploaded PDF: {paper_id} -> {minio_url}")
+            log.info(f"Uploaded PDF: {paper_id} -> {minio_url}")
             return minio_url
 
         except S3Error as e:
-            logger.error(f"Failed to upload PDF {paper_id}: {e}")
+            log.error(f"Failed to upload PDF {paper_id}: {e}")
             return None
 
     def upload_markdown(self, paper_id: str, markdown_path: Path) -> Optional[str]:
@@ -111,7 +110,7 @@ class MinIOStorage:
             MinIO URL for the uploaded file or None if failed
         """
         if not markdown_path.exists():
-            logger.warning(f"Markdown file not found: {markdown_path}")
+            log.warning(f"Markdown file not found: {markdown_path}")
             return None
 
         object_name = f"{paper_id}.md"
@@ -127,11 +126,11 @@ class MinIOStorage:
 
             # Generate URL
             minio_url = f"http://{self.endpoint}/{self.markdown_bucket}/{object_name}"
-            logger.info(f"Uploaded markdown: {paper_id} -> {minio_url}")
+            log.info(f"Uploaded markdown: {paper_id} -> {minio_url}")
             return minio_url
 
         except S3Error as e:
-            logger.error(f"Failed to upload markdown {paper_id}: {e}")
+            log.error(f"Failed to upload markdown {paper_id}: {e}")
             return None
 
     def get_pdf_url(self, paper_id: str) -> Optional[str]:
@@ -160,7 +159,7 @@ class MinIOStorage:
             return url
 
         except S3Error as e:
-            logger.warning(f"PDF not found in MinIO: {paper_id}")
+            log.warning(f"PDF not found in MinIO: {paper_id}")
             return None
 
     def get_markdown_url(self, paper_id: str) -> Optional[str]:
@@ -189,7 +188,7 @@ class MinIOStorage:
             return url
 
         except S3Error as e:
-            logger.warning(f"Markdown not found in MinIO: {paper_id}")
+            log.warning(f"Markdown not found in MinIO: {paper_id}")
             return None
 
     def delete_paper_files(self, paper_id: str) -> Dict[str, bool]:
@@ -208,17 +207,17 @@ class MinIOStorage:
         try:
             self.client.remove_object(self.pdf_bucket, f"{paper_id}.pdf")
             results["pdf"] = True
-            logger.info(f"Deleted PDF from MinIO: {paper_id}")
+            log.info(f"Deleted PDF from MinIO: {paper_id}")
         except S3Error as e:
-            logger.warning(f"Could not delete PDF {paper_id}: {e}")
+            log.warning(f"Could not delete PDF {paper_id}: {e}")
 
         # Delete markdown
         try:
             self.client.remove_object(self.markdown_bucket, f"{paper_id}.md")
             results["markdown"] = True
-            logger.info(f"Deleted markdown from MinIO: {paper_id}")
+            log.info(f"Deleted markdown from MinIO: {paper_id}")
         except S3Error as e:
-            logger.warning(f"Could not delete markdown {paper_id}: {e}")
+            log.warning(f"Could not delete markdown {paper_id}: {e}")
 
         return results
 
@@ -252,7 +251,7 @@ class MinIOStorage:
                 stats["total_size_bytes"] += total_size
 
             except S3Error as e:
-                logger.error(f"Error getting stats for bucket {bucket}: {e}")
+                log.error(f"Error getting stats for bucket {bucket}: {e}")
                 stats["buckets"][bucket] = {"error": str(e)}
 
         stats["total_size_mb"] = round(stats["total_size_bytes"] / (1024 * 1024), 2)

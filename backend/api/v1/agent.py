@@ -4,7 +4,7 @@ LlamaIndex agent endpoints for intelligent paper search.
 Provides AI-powered search capabilities using ReAct agent with Gemini.
 """
 
-import logging
+from logs import log
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 
@@ -14,9 +14,6 @@ from backend.services import ElasticsearchSearchService
 from backend.config import config
 from backend.llama_agent.agent import PaperSearchAgent
 from backend.llama_agent.response_builder import FormattedResponse
-
-logger = logging.getLogger(__name__)
-
 # Create router for LlamaIndex endpoints
 router = APIRouter(prefix="/api/v1/llama", tags=["LlamaIndex Agent"])
 
@@ -75,10 +72,10 @@ def get_paper_agent() -> PaperSearchAgent:
 
             # Initialize agent
             paper_agent = PaperSearchAgent(es_service=es_service)
-            logger.info("LlamaIndex paper search agent initialized")
+            log.info("LlamaIndex paper search agent initialized")
 
         except Exception as e:
-            logger.error(f"Failed to initialize paper search agent: {e}")
+            log.error(f"Failed to initialize paper search agent: {e}")
             raise HTTPException(status_code=503, detail="Paper search agent unavailable")
 
     return paper_agent
@@ -125,7 +122,7 @@ async def llama_health():
         )
 
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
+        log.error(f"Health check failed: {e}")
         return LlamaHealthResponse(
             status="unhealthy",
             services={
@@ -149,7 +146,7 @@ async def llama_search(request: LlamaSearchRequest):
     - Relevance ranking and deduplication
     """
     try:
-        logger.info(
+        log.info(
             f"LlamaIndex search request: query='{request.query}', "
             f"max_results={request.max_results}, iterations={request.enable_iterations}"
         )
@@ -187,7 +184,7 @@ async def llama_search(request: LlamaSearchRequest):
             llama_config.include_summaries = original_include_summaries
 
     except Exception as e:
-        logger.exception("LlamaIndex search failed")
+        log.exception("LlamaIndex search failed")
         return LlamaSearchResponse(
             success=False,
             query=request.query,

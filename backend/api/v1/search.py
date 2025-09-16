@@ -11,9 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from backend.api.main import search_service
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
-import logging
-
-logger = logging.getLogger(__name__)
+from logs import log
 
 router = APIRouter(prefix="/api/v1", tags=["Search"])
 
@@ -65,7 +63,7 @@ async def search_papers(request: SearchRequest, req: Request):
         raise HTTPException(status_code=503, detail="Search service not initialized")
 
     try:
-        logger.info(f"Search request: query='{request.query}', mode={request.search_mode}")
+        log.info(f"Search request: query='{request.query}', mode={request.search_mode}")
 
         results = search_service.search(
             query=request.query,
@@ -102,7 +100,7 @@ async def search_papers(request: SearchRequest, req: Request):
         )
 
     except Exception as e:
-        logger.error(f"Search error: {e}")
+        log.error(f"Search error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -123,7 +121,7 @@ async def search_full_papers(request: SearchRequest, req: Request):
         raise HTTPException(status_code=503, detail="Search service not initialized")
 
     try:
-        logger.info(f"Full paper search request: query='{request.query}', mode={request.search_mode}")
+        log.info(f"Full paper search request: query='{request.query}', mode={request.search_mode}")
 
         results = search_service.search(
             query=request.query,
@@ -160,7 +158,7 @@ async def search_full_papers(request: SearchRequest, req: Request):
         )
 
     except Exception as e:
-        logger.error(f"Full paper search error: {e}")
+        log.error(f"Full paper search error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -195,5 +193,5 @@ async def search_suggestions(
         }
 
     except Exception as e:
-        logger.error(f"Error getting suggestions: {e}")
+        log.error(f"Error getting suggestions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
