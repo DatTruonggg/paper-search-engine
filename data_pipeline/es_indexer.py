@@ -271,11 +271,8 @@ class ESIndexer:
         # Build the search query
         should_clauses = []
 
-<<<<<<< Updated upstream
-=======
         logger.info(f"Building ES query - BM25: {use_bm25}, Query: '{query}', Fields: {search_fields}")
 
->>>>>>> Stashed changes
         # BM25 text search on chunks
         if use_bm25 and query:
             should_clauses.append({
@@ -283,16 +280,10 @@ class ESIndexer:
                     "query": query,
                     "fields": search_fields,
                     "type": "best_fields",
-<<<<<<< Updated upstream
-                    "boost": 0.4  # 40% weight for BM25
-                }
-            })
-=======
                     "boost": 0.3  # 30% weight for BM25
                 }
             })
             logger.debug(f"Added BM25 clause with query: '{query}'")
->>>>>>> Stashed changes
 
         # Semantic search
         if use_semantic and query_embedding is not None:
@@ -308,11 +299,7 @@ class ESIndexer:
                         "source": "cosineSimilarity(params.query_vector, 'title_embedding') + 1.0",
                         "params": {"query_vector": query_embedding}
                     },
-<<<<<<< Updated upstream
-                    "boost": 0.3  # 30% weight for title semantic
-=======
                     "boost": 0.4  # 40% weight for title semantic
->>>>>>> Stashed changes
                 }
             })
 
@@ -324,11 +311,7 @@ class ESIndexer:
                         "source": "cosineSimilarity(params.query_vector, 'abstract_embedding') + 1.0",
                         "params": {"query_vector": query_embedding}
                     },
-<<<<<<< Updated upstream
-                    "boost": 0.2  # 20% weight for abstract semantic
-=======
                     "boost": 0.25  # 25% weight for abstract semantic
->>>>>>> Stashed changes
                 }
             })
 
@@ -340,11 +323,7 @@ class ESIndexer:
                         "source": "cosineSimilarity(params.query_vector, 'chunk_embedding') + 1.0",
                         "params": {"query_vector": query_embedding}
                     },
-<<<<<<< Updated upstream
-                    "boost": 0.6  # 60% weight for chunk semantic
-=======
                     "boost": 0.35  # 35% weight for chunk semantic
->>>>>>> Stashed changes
                 }
             })
 
@@ -382,19 +361,6 @@ class ESIndexer:
             "size": 0  # Only get aggregations
         }
 
-<<<<<<< Updated upstream
-        # Execute search
-        response = self.es.search(index=self.index_name, body=search_body)
-
-        # Extract aggregated results
-        results = []
-        for bucket in response['aggregations']['papers']['buckets']:
-            paper_data = bucket['best_chunk']['hits']['hits'][0]['_source']
-            paper_data['_score'] = bucket['max_score']['value']
-            paper_data['matching_chunks'] = bucket['doc_count']
-            results.append(paper_data)
-
-=======
         # Log the full query for debugging
         import json
         logger.debug(f"Full ES search query: {json.dumps(search_body, indent=2)}")
@@ -437,7 +403,6 @@ class ESIndexer:
 
         logger.info(f"Extracted {len(results)} papers from {len(response['aggregations']['papers']['buckets'])} buckets")
 
->>>>>>> Stashed changes
         # Sort by score descending
         results.sort(key=lambda x: x['_score'], reverse=True)
 

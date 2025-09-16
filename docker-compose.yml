@@ -9,11 +9,7 @@ services:
       - xpack.security.enabled=false
       - xpack.security.http.ssl.enabled=false
       - xpack.security.transport.ssl.enabled=false
-<<<<<<< Updated upstream
-      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
-=======
       - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
->>>>>>> Stashed changes
       - cluster.name=paper-search-cluster
       - node.name=paper-search-node
     ports:
@@ -57,11 +53,8 @@ services:
     container_name: paper-search-backend
     ports:
       - "8002:8000"  # Changed port to avoid conflict
-<<<<<<< Updated upstream
-=======
     env_file:
       - .env
->>>>>>> Stashed changes
     environment:
       - ES_HOST=paper-search-elasticsearch:9200
       - MINIO_ENDPOINT=paper-search-minio:9000

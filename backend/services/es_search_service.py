@@ -14,10 +14,7 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from data_pipeline.bge_embedder import BGEEmbedder
 from data_pipeline.es_indexer import ESIndexer
-<<<<<<< Updated upstream
-=======
 from backend.config import config
->>>>>>> Stashed changes
 
 logger = logging.getLogger(__name__)
 
@@ -61,16 +58,6 @@ class PaperDetails:
 
 
 class ElasticsearchSearchService:
-<<<<<<< Updated upstream
-    """Service for searching papers using Elasticsearch and BGE embeddings."""
-
-    def __init__(
-        self,
-        es_host: str = "localhost:9202",
-        index_name: str = "papers",
-        bge_model: str = "BAAI/bge-large-en-v1.5",
-        bge_cache_dir: str = "./models"
-=======
     """
     Service providing paper search and analytics on a chunk-based index.
 
@@ -83,7 +70,6 @@ class ElasticsearchSearchService:
         index_name: str = None,
         bge_model: str = None,
         bge_cache_dir: str = None
->>>>>>> Stashed changes
     ):
         """
         Initialize the search service.
@@ -98,26 +84,15 @@ class ElasticsearchSearchService:
 
         # Initialize BGE embedder
         self.embedder = BGEEmbedder(
-<<<<<<< Updated upstream
-            model_name=bge_model,
-            cache_dir=bge_cache_dir
-=======
             model_name=bge_model or config.BGE_MODEL_NAME,
             cache_dir=bge_cache_dir or config.BGE_CACHE_DIR,
->>>>>>> Stashed changes
         )
 
         # Initialize ES indexer
         self.indexer = ESIndexer(
-<<<<<<< Updated upstream
-            es_host=es_host,
-            index_name=index_name,
-            embedding_dim=self.embedder.embedding_dim
-=======
             es_host=es_host or config.ES_HOST,
             index_name=index_name or config.ES_INDEX_NAME,
             embedding_dim=self.embedder.embedding_dim,
->>>>>>> Stashed changes
         )
 
         logger.info("Search service initialized successfully")
@@ -130,26 +105,6 @@ class ElasticsearchSearchService:
         categories: Optional[List[str]] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
-<<<<<<< Updated upstream
-        author: Optional[str] = None
-    ) -> List[SearchResult]:
-        """
-        Search for papers using various modes.
-
-        Args:
-            query: Search query text
-            max_results: Maximum number of results
-            search_mode: Search mode (hybrid, semantic, bm25, title_only)
-            categories: Filter by categories
-            date_from: Filter papers from this date
-            date_to: Filter papers to this date
-            author: Filter by author name
-
-        Returns:
-            List of search results
-        """
-        logger.info(f"Searching for: '{query}' (mode: {search_mode})")
-=======
         author: Optional[str] = None,
         include_chunks: bool = False
     ) -> List[SearchResult]:
@@ -170,19 +125,11 @@ class ElasticsearchSearchService:
             List of SearchResult with normalized scores in [0, 1].
         """
         logger.info(f"Searching for: '{query}' (mode: {search_mode}, include_chunks: {include_chunks})")
->>>>>>> Stashed changes
 
         # Generate query embedding for semantic search
         query_embedding = None
         if search_mode in ["hybrid", "semantic"]:
             query_embedding = self.embedder.encode(query)
-<<<<<<< Updated upstream
-
-        # Configure search based on mode
-        search_fields = self._get_search_fields(search_mode)
-        use_semantic = search_mode in ["hybrid", "semantic"]
-        use_bm25 = search_mode in ["hybrid", "bm25", "title_only"]
-=======
             logger.debug(f"Generated query embedding with shape: {query_embedding.shape if hasattr(query_embedding, 'shape') else 'unknown'}")
 
         # Configure search based on mode
@@ -191,7 +138,6 @@ class ElasticsearchSearchService:
         use_bm25 = search_mode in ["hybrid", "fulltext"]
 
         logger.info(f"Search config - Fields: {search_fields}, Semantic: {use_semantic}, BM25: {use_bm25}")
->>>>>>> Stashed changes
 
         # Perform search
         raw_results = self.indexer.search(
@@ -203,16 +149,6 @@ class ElasticsearchSearchService:
             use_bm25=use_bm25
         )
 
-<<<<<<< Updated upstream
-        # Convert to SearchResult objects
-        results = []
-        for hit in raw_results:
-            # Apply filters
-            if categories and not any(cat in hit.get('categories', []) for cat in categories):
-                continue
-
-            if author and author.lower() not in ' '.join(hit.get('authors', [])).lower():
-=======
         logger.info(f"ES returned {len(raw_results)} raw results")
 
         # Convert to SearchResult objects
@@ -232,7 +168,6 @@ class ElasticsearchSearchService:
 
             if author and author.lower() not in ' '.join(hit.get('authors', [])).lower():
                 logger.info(f"Filtered out {hit.get('paper_id', 'unknown')} - author mismatch. Looking for '{author}', found {hit.get('authors', [])}")
->>>>>>> Stashed changes
                 continue
 
             # Check date range
@@ -240,16 +175,6 @@ class ElasticsearchSearchService:
                 pub_date = hit.get('publish_date')
                 if pub_date:
                     if date_from and pub_date < date_from:
-<<<<<<< Updated upstream
-                        continue
-                    if date_to and pub_date > date_to:
-                        continue
-
-            # Create result
-            result = SearchResult(
-                paper_id=hit.get('paper_id', ''),
-                title=hit.get('title', 'Untitled'),
-=======
                         logger.debug(f"Filtered out {hit.get('paper_id', 'unknown')} - date too old")
                         continue
                     if date_to and pub_date > date_to:
@@ -276,7 +201,6 @@ class ElasticsearchSearchService:
             result = SearchResult(
                 paper_id=paper_id,
                 title=title,
->>>>>>> Stashed changes
                 authors=hit.get('authors', []),
                 abstract=hit.get('abstract', ''),
                 score=hit.get('_score', 0.0),
@@ -289,12 +213,9 @@ class ElasticsearchSearchService:
 
             results.append(result)
 
-<<<<<<< Updated upstream
-=======
             if i < 3:
                 logger.debug(f"Added result {i}: {result.paper_id} - {result.title[:50]}")
 
->>>>>>> Stashed changes
             if len(results) >= max_results:
                 break
 
@@ -306,15 +227,6 @@ class ElasticsearchSearchService:
 
     def get_paper_details(self, paper_id: str) -> Optional[PaperDetails]:
         """
-<<<<<<< Updated upstream
-        Get detailed information about a specific paper from chunk documents.
-
-        Args:
-            paper_id: Paper ID
-
-        Returns:
-            Paper details or None if not found
-=======
         Retrieve full paper details by stitching chunk documents.
 
         Args:
@@ -322,7 +234,6 @@ class ElasticsearchSearchService:
 
         Returns:
             PaperDetails if found, otherwise None.
->>>>>>> Stashed changes
         """
         logger.info(f"Getting details for paper: {paper_id}")
 
@@ -390,16 +301,6 @@ class ElasticsearchSearchService:
         max_results: int = 10
     ) -> List[SearchResult]:
         """
-<<<<<<< Updated upstream
-        Find papers similar to a given paper using chunk-based search.
-
-        Args:
-            paper_id: Reference paper ID
-            max_results: Maximum number of results
-
-        Returns:
-            List of similar papers
-=======
         Find papers similar to the reference paper using semantic similarity.
 
         Args:
@@ -408,7 +309,6 @@ class ElasticsearchSearchService:
 
         Returns:
             List of SearchResult excluding the reference paper.
->>>>>>> Stashed changes
         """
         logger.info(f"Finding papers similar to: {paper_id}")
 
@@ -459,17 +359,10 @@ class ElasticsearchSearchService:
 
     def get_index_stats(self) -> Dict[str, Any]:
         """
-<<<<<<< Updated upstream
-        Get statistics about the chunk-based search index.
-
-        Returns:
-            Dictionary with index statistics
-=======
         Return aggregate statistics for the chunk-based search index.
 
         Returns:
             Dictionary with counts and derived metrics.
->>>>>>> Stashed changes
         """
         stats = self.indexer.get_index_stats()
 
@@ -516,16 +409,6 @@ class ElasticsearchSearchService:
 
     def _normalize_scores(self, results: List[SearchResult], search_mode: str) -> List[SearchResult]:
         """
-<<<<<<< Updated upstream
-        Normalize scores to 0-1 range based on search mode.
-
-        Args:
-            results: List of search results with raw scores
-            search_mode: Search mode used
-
-        Returns:
-            List of search results with normalized scores
-=======
         Normalize raw scores to the [0, 1] interval for UI comparability.
 
         Args:
@@ -534,7 +417,6 @@ class ElasticsearchSearchService:
 
         Returns:
             Results with score field normalized.
->>>>>>> Stashed changes
         """
         if not results:
             return results
@@ -571,29 +453,6 @@ class ElasticsearchSearchService:
 
         return results
 
-<<<<<<< Updated upstream
-    def _get_search_fields(self, search_mode: str) -> List[str]:
-        """
-        Get search fields based on search mode for chunk-based indexing.
-
-        Args:
-            search_mode: Search mode
-
-        Returns:
-            List of field names with boosts
-        """
-        if search_mode == "title_only":
-            return ["title^3"]
-        else:
-            return ["title^3", "abstract^2", "chunk_text"]
-
-    def health_check(self) -> Dict[str, Any]:
-        """
-        Check health of all components.
-
-        Returns:
-            Health status dictionary
-=======
     def _get_search_fields(self, search_mode: str, include_chunks: bool = False) -> List[str]:
         """
         Resolve search fields and boosts per mode for chunk-based index.
@@ -618,7 +477,6 @@ class ElasticsearchSearchService:
 
         Returns:
             Dictionary capturing per-component and overall health.
->>>>>>> Stashed changes
         """
         health = {
             "status": "healthy",
