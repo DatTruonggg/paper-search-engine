@@ -38,6 +38,13 @@ export class ResearchService {
     })
   }
 
+  async searchPapersWithAgent(query: string, filters?: SearchFilters, page = 1, pageSize = 20, sort: string = "relevance") {
+    return apiFetch<SearchResponse>(`/v1/search/agent`, {
+      method: 'POST',
+      body: JSON.stringify({ query, filters, page, pageSize, sort }),
+    })
+  }
+
   async bookmark(paperId: string, on: boolean) {
     const method = on ? 'PUT' : 'DELETE'
     return apiFetch(`/v1/bookmarks/${encodeURIComponent(paperId)}`, { method })
