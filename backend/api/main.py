@@ -4,13 +4,12 @@ FastAPI backend for Paper Search Engine with Elasticsearch.
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from logs import log
 from pathlib import Path
 import sys
 
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent.parent))
-
+from logs import log
 from backend.services import ElasticsearchSearchService
 from backend.config import config
 
@@ -91,4 +90,4 @@ log.info("All API routes configured")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=config.API_HOST, port=config.API_PORT)

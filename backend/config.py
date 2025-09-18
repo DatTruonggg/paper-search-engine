@@ -49,7 +49,7 @@ class Config:
 
     # Server Configuration
     API_HOST = os.getenv("API_HOST", "0.0.0.0")
-    API_PORT = int(os.getenv("API_PORT", "8000"))
+    API_PORT = int(os.getenv("API_PORT", "8001"))
     DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
 
     # Elasticsearch Configuration

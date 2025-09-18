@@ -209,7 +209,7 @@ class PaperSearchAgent:
             if "semantic" in strategy_lower:
                 override_mode = "semantic"
             elif "bm25" in strategy_lower:
-                override_mode = "bm25"
+                override_mode = "fulltext"
             elif "title" in strategy_lower:
                 override_mode = "title_only"
             elif "hybrid" in strategy_lower:
@@ -227,8 +227,8 @@ class PaperSearchAgent:
         # Handle NARROW strategies
         elif "narrow" in strategy_lower:
             # Add more specific terms or switch to exact matching
-            override_mode = "bm25"  # BM25 is better for specific term matching
-            log.info(f"Narrowed search with BM25 mode")
+            override_mode = "fulltext"  # BM25 keyword matching
+            log.info(f"Narrowed search with fulltext (BM25) mode")
 
         # Execute refined search with parameters
         return await self._search_papers_with_analysis_params(
@@ -312,7 +312,7 @@ class PaperSearchAgent:
                 search_params.update(extra_params)
 
             # Execute search
-            results = self.search_tool.search_papers(**search_params)
+            results = await self.search_tool.search_papers(**search_params)
 
             # Add analysis metadata
             results["analysis"] = {
@@ -339,7 +339,7 @@ class PaperSearchAgent:
     ) -> Dict[str, Any]:
         """Determine search parameters from query analysis"""
         params = {
-            "query": " ".join(analysis.keywords) if analysis.keywords else analysis.original_query,
+            "query": (" ".join(analysis.keywords) if analysis.keywords else analysis.original_query),
             "max_results": llama_config.max_results_per_search,
             "search_mode": override_mode or llama_config.default_search_mode
         }
@@ -362,9 +362,11 @@ class PaperSearchAgent:
             if analysis.query_type == "specific_paper":
                 params["search_mode"] = "title_only"
             elif analysis.query_type == "author_search":
-                params["search_mode"] = "bm25"  # Better for names
+                params["search_mode"] = "fulltext"  # BM25 keyword matching
 
         return params
+
+    # Removed local enhancement; delegate to QueryAnalyzer.enhance_query when needed
 
     async def search(self, query: str) -> FormattedResponse:
         """
@@ -383,49 +385,72 @@ class PaperSearchAgent:
             all_results = []
             iterations = 0
 
-            # First search iteration
-            initial_results = await self._search_papers_with_analysis(query)
+            # First attempt: fast BM25 (fulltext) over title/abstract using user query
+            initial_results = await self._search_papers_with_analysis_params(
+                query,
+                override_mode="fulltext",
+                extra_params={"include_chunks": False}
+            )
 
             if initial_results.get("success") and initial_results.get("papers"):
                 all_results.extend(initial_results["papers"])
                 iterations = 1
 
-                # Evaluate results if we have any
-                if llama_config.enable_result_reranking and all_results:
-                    evaluation = await self.query_analyzer.evaluate_results(
+            # Evaluate and apply fallback sequence
+            if llama_config.enable_result_reranking:
+                # Evaluate current results (may be empty)
+                evaluation = await self.query_analyzer.evaluate_results(query, all_results)
+
+                # If below thresholds, try hybrid
+                if (
+                    (evaluation.quality_score < llama_config.quality_min_score) or
+                    (not evaluation.has_sufficient_results) or
+                    (len(all_results) < llama_config.quality_min_results)
+                ) and iterations < llama_config.max_iterations:
+                    log.info("Quality below threshold after fulltext. Trying hybrid mode.")
+                    hybrid_results = await self._search_papers_with_analysis_params(
                         query,
-                        all_results
+                        override_mode="hybrid",
+                        extra_params={"include_chunks": False}
                     )
+                    if hybrid_results.get("success") and hybrid_results.get("papers"):
+                        all_results.extend(hybrid_results["papers"])
+                        iterations += 1
 
-                    # Perform refinement if needed
-                    if evaluation.needs_refinement and iterations < llama_config.max_iterations:
-                        log.info(f"Refining search: {evaluation.refinement_strategy}")
+                # Re-evaluate and try semantic if needed
+                evaluation2 = await self.query_analyzer.evaluate_results(query, all_results)
+                if (
+                    (evaluation2.quality_score < llama_config.quality_min_score) or
+                    (not evaluation2.has_sufficient_results) or
+                    (len(all_results) < llama_config.quality_min_results)
+                ) and iterations < llama_config.max_iterations:
+                    log.info("Quality still low. Trying semantic mode.")
+                    semantic_results = await self._search_papers_with_analysis_params(
+                        query,
+                        override_mode="semantic",
+                        extra_params={"include_chunks": False}
+                    )
+                    if semantic_results.get("success") and semantic_results.get("papers"):
+                        all_results.extend(semantic_results["papers"])
+                        iterations += 1
 
-                        refined_results = await self._refine_search(
-                            query,
-                            evaluation.refinement_strategy or "Try broader search"
-                        )
-
-                        if refined_results.get("success") and refined_results.get("papers"):
-                            all_results.extend(refined_results["papers"])
-                            iterations += 1
-
-                            # One more evaluation and potential refinement
-                            if iterations < llama_config.max_iterations:
-                                evaluation2 = await self.query_analyzer.evaluate_results(
-                                    query,
-                                    all_results
-                                )
-
-                                if evaluation2.needs_refinement:
-                                    final_results = await self._refine_search(
-                                        query,
-                                        evaluation2.refinement_strategy or "Try semantic search"
-                                    )
-
-                                    if final_results.get("success") and final_results.get("papers"):
-                                        all_results.extend(final_results["papers"])
-                                        iterations += 1
+                # Final attempt: analyzer-produced enhanced query if still below thresholds
+                evaluation3 = await self.query_analyzer.evaluate_results(query, all_results)
+                if (
+                    (evaluation3.quality_score < llama_config.quality_min_score) or
+                    (not evaluation3.has_sufficient_results) or
+                    (len(all_results) < llama_config.quality_min_results)
+                ) and iterations < llama_config.max_iterations:
+                    log.info("Quality still below threshold. Trying analyzer.enhance_query and hybrid.")
+                    enhanced = await self.query_analyzer.enhance_query(query)
+                    enhanced_results = await self._search_papers_with_analysis_params(
+                        enhanced,
+                        override_mode="hybrid",
+                        extra_params={"include_chunks": False}
+                    )
+                    if enhanced_results.get("success") and enhanced_results.get("papers"):
+                        all_results.extend(enhanced_results["papers"])
+                        iterations += 1
 
             # Build final response
             response = await self.response_builder.build_response(

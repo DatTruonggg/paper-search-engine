@@ -26,6 +26,8 @@ class LlamaAgentConfig(BaseModel):
     default_search_mode: str = Field(default="hybrid", description="Default search mode")
     enable_query_analysis: bool = Field(default=True, description="Enable query analysis")
     enable_result_reranking: bool = Field(default=True, description="Enable result reranking")
+    quality_min_score: float = Field(default=0.6, description="Min acceptable quality score before fallback")
+    quality_min_results: int = Field(default=5, description="Min acceptable number of results before fallback")
 
     # Response configuration
     response_max_papers: int = Field(default=10, description="Maximum papers in response")

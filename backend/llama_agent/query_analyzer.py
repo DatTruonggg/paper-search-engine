@@ -34,6 +34,10 @@ class ResultEvaluationOutput(BaseModel):
     needs_refinement: bool = Field(description="Whether search needs refinement")
     refinement_strategy: Optional[str] = Field(None, description="Strategy for refinement if needed")
 
+class QueryEnhancementOutput(BaseModel):
+    """Structured output for query enhancement"""
+    enhanced_query: str = Field(description="Concise, enhanced retrieval query")
+
 # Dataclass versions for internal use
 @dataclass
 class AnalyzedQuery:
@@ -90,6 +94,22 @@ class QueryAnalyzer:
             llm=self.llm
         )
 
+        # Program to enhance a user query for retrieval
+        self.enhancement_program = LLMTextCompletionProgram.from_defaults(
+            output_cls=QueryEnhancementOutput,
+            prompt_template_str=(
+                "Enhance the following research paper search query for retrieval.\n"
+                "Query: {query}\n\n"
+                "Requirements:\n"
+                "- Expand acronyms to their common full terms (e.g., RAG → retrieval augmented generation)\n"
+                "- Use concise wording (<= 15 words)\n"
+                "- Keep essential key terms; remove fluff\n"
+                "Return only the enhanced_query field."
+            ),
+            llm=self.llm
+        )
+
+        # Program to evaluate results quality
         self.evaluation_program = LLMTextCompletionProgram.from_defaults(
             output_cls=ResultEvaluationOutput,
             prompt_template_str=(
@@ -100,6 +120,14 @@ class QueryAnalyzer:
             ),
             llm=self.llm
         )
+
+    async def enhance_query(self, query: str) -> str:
+        """Return an LLM-enhanced retrieval query for a given user query."""
+        try:
+            output: QueryEnhancementOutput = self.enhancement_program(query=query)
+            return output.enhanced_query or query
+        except Exception:
+            return query
 
     async def analyze_query(self, query: str) -> AnalyzedQuery:
         """

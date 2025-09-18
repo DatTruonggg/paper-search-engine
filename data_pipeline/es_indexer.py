@@ -358,10 +358,6 @@ class ESIndexer:
             "size": 0  # Only get aggregations
         }
 
-        # Log the full query for debugging
-        import json
-        log.debug(f"Full ES search query: {json.dumps(search_body, indent=2)}")
-
         # Execute search
         response = self.es.search(index=self.index_name, body=search_body)
 
@@ -371,7 +367,7 @@ class ESIndexer:
         # Extract aggregated results
         results = []
         for i, bucket in enumerate(response['aggregations']['papers']['buckets']):
-            if i < 3:
+            if i < 5:
                 log.debug(f"Bucket {i}: paper_id={bucket['key']}, doc_count={bucket['doc_count']}, max_score={bucket['max_score']['value']}")
 
             # Check if best_chunk has hits
@@ -395,7 +391,7 @@ class ESIndexer:
 
             results.append(paper_data)
 
-            if i < 3:
+            if i < 5:
                 log.debug(f"Extracted paper {i}: id={paper_data.get('paper_id')}, title={paper_data.get('title', 'N/A')[:50]}")
 
         log.info(f"Extracted {len(results)} papers from {len(response['aggregations']['papers']['buckets'])} buckets")
