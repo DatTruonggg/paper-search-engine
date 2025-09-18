@@ -139,26 +139,26 @@ export function PaperSearchEngine({ onPaperSelect }: PaperSearchEngineProps) {
   return (
     <div className="flex flex-col h-full">
       {/* Search Header */}
-      <div className="p-4 border-b border-border bg-card">
+      <div className="p-4 border-b border-slate-200 bg-white">
         <div className="flex gap-2 mb-3">
           <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 h-4 w-4" />
             <Input
               placeholder="Search papers by title, abstract, or keywords..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyPress={handleKeyPress}
-              className="pl-10"
+              className="pl-10 border-slate-200 focus:border-green-400 focus:ring-2 focus:ring-green-400/20"
             />
           </div>
-          <Button onClick={handleSearch} disabled={isSearching}>
+          <Button onClick={handleSearch} disabled={isSearching} className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white border-0 shadow-sm">
             {isSearching ? "Searching..." : "Search"}
           </Button>
         </div>
 
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => setShowFilters(!showFilters)}>
-            <Filter className="h-4 w-4 mr-2" />
+          <Button variant="outline" size="sm" onClick={() => setShowFilters(!showFilters)} className="border-slate-200 hover:bg-green-50 hover:text-green-700">
+            <Filter className="h-4 w-4 mr-2 text-green-600" />
             Filters
           </Button>
           {filteredResults.length > 0 && (
@@ -170,7 +170,7 @@ export function PaperSearchEngine({ onPaperSelect }: PaperSearchEngineProps) {
       {/* Filters Panel */}
       <Collapsible open={showFilters} onOpenChange={setShowFilters}>
         <CollapsibleContent>
-          <div className="p-4 border-b border-border bg-muted/50">
+          <div className="p-4 border-b border-slate-200 bg-gradient-to-r from-green-50/70 to-emerald-50/70">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               <div>
                 <label className="text-sm font-medium mb-2 block">Date Range</label>
@@ -241,13 +241,13 @@ export function PaperSearchEngine({ onPaperSelect }: PaperSearchEngineProps) {
         {filteredResults.map((paper) => (
           <Card
             key={paper.id}
-            className="hover:shadow-md transition-shadow cursor-pointer"
+            className="hover:shadow-lg transition-all duration-200 cursor-pointer border-slate-200 hover:border-green-200"
             onClick={() => onPaperSelect?.(paper)}
           >
             <CardHeader className="pb-3">
               <div className="flex items-start justify-between gap-4">
                 <CardTitle className="text-lg leading-tight text-balance">{paper.title}</CardTitle>
-                <Badge variant="secondary" className="shrink-0">
+                <Badge variant="secondary" className="shrink-0 bg-green-100 text-green-700 border-green-200">
                   {paper.category}
                 </Badge>
               </div>
@@ -277,15 +277,15 @@ export function PaperSearchEngine({ onPaperSelect }: PaperSearchEngineProps) {
               <div className="flex items-center justify-between">
                 <div className="flex flex-wrap gap-1">
                   {paper.keywords.slice(0, 4).map((keyword) => (
-                    <Badge key={keyword} variant="outline" className="text-xs">
+                    <Badge key={keyword} variant="outline" className="text-xs border-green-200 text-green-700 hover:bg-green-50">
                       {keyword}
                     </Badge>
                   ))}
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground">{paper.venue}</span>
-                  <Button variant="ghost" size="sm" asChild>
+                  <span className="text-xs text-slate-500">{paper.venue}</span>
+                  <Button variant="ghost" size="sm" asChild className="hover:bg-green-50 hover:text-green-700">
                     <a href={paper.url} target="_blank" rel="noopener noreferrer">
                       <ExternalLink className="h-4 w-4" />
                     </a>

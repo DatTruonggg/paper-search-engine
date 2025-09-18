@@ -26,28 +26,28 @@ export function EmptyState({
 }: EmptyStateProps) {
   return (
     <div className="flex items-center justify-center min-h-[400px] p-8">
-      <Card className="w-full max-w-md text-center bg-gradient-to-br from-white via-slate-50 to-slate-100 border-2 border-slate-200 shadow-2xl">
+      <Card className="w-full max-w-md text-center bg-white border border-slate-200 shadow-lg">
         <CardHeader>
-          <div className="mx-auto w-20 h-20 bg-gradient-to-br from-purple-100 via-blue-100 to-indigo-100 rounded-full flex items-center justify-center mb-6 shadow-lg border border-white">
+          <div className="mx-auto w-20 h-20 bg-gradient-to-br from-green-100 to-emerald-100 rounded-full flex items-center justify-center mb-6 shadow-md border border-white">
             {icon}
           </div>
-          <CardTitle className="text-2xl font-bold bg-gradient-to-r from-slate-700 to-slate-600 bg-clip-text text-transparent">{title}</CardTitle>
+          <CardTitle className="text-2xl font-bold text-slate-800">{title}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
-          <p className="text-slate-600 font-medium leading-relaxed">{description}</p>
+          <p className="text-slate-600 leading-relaxed">{description}</p>
 
           {suggestions && suggestions.length > 0 && (
             <div className="space-y-3">
-              <p className="text-sm font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">✨ Try searching for:</p>
+              <p className="text-sm font-semibold text-green-700">Try searching for:</p>
               <div className="flex flex-wrap gap-2 justify-center">
                 {suggestions.map((suggestion, index) => {
                   const colors = [
-                    "bg-gradient-to-r from-rose-100 to-pink-100 hover:from-rose-200 hover:to-pink-200 text-rose-700 border-rose-200",
-                    "bg-gradient-to-r from-blue-100 to-indigo-100 hover:from-blue-200 hover:to-indigo-200 text-blue-700 border-blue-200",
-                    "bg-gradient-to-r from-emerald-100 to-green-100 hover:from-emerald-200 hover:to-green-200 text-emerald-700 border-emerald-200",
-                    "bg-gradient-to-r from-amber-100 to-yellow-100 hover:from-amber-200 hover:to-yellow-200 text-amber-700 border-amber-200",
-                    "bg-gradient-to-r from-purple-100 to-violet-100 hover:from-purple-200 hover:to-violet-200 text-purple-700 border-purple-200",
-                    "bg-gradient-to-r from-cyan-100 to-teal-100 hover:from-cyan-200 hover:to-teal-200 text-cyan-700 border-cyan-200"
+                    "bg-green-50 hover:bg-green-100 text-green-700 border-green-300",
+                    "bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-300",
+                    "bg-teal-50 hover:bg-teal-100 text-teal-700 border-teal-300",
+                    "bg-green-50 hover:bg-green-100 text-green-700 border-green-300",
+                    "bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-300",
+                    "bg-teal-50 hover:bg-teal-100 text-teal-700 border-teal-300"
                   ]
                   return (
                     <Button
@@ -56,7 +56,7 @@ export function EmptyState({
                       size="sm"
                       onClick={() => onSuggestionClick?.(suggestion)}
                       className={cn(
-                        "text-xs h-8 font-semibold transition-all duration-300 shadow-sm hover:shadow-md",
+                        "text-xs h-8 font-medium transition-all duration-200 shadow-sm hover:shadow-md",
                         colors[index % colors.length]
                       )}
                     >
@@ -76,10 +76,10 @@ export function EmptyState({
                   variant={action.variant || 'default'}
                   onClick={action.action}
                   className={cn(
-                    "font-semibold shadow-lg hover:shadow-xl transition-all duration-300",
+                    "font-medium shadow-sm hover:shadow-md transition-all duration-200",
                     action.variant === 'outline'
-                      ? "bg-gradient-to-r from-slate-50 to-white hover:from-slate-100 hover:to-slate-50 border-slate-300 text-slate-700"
-                      : "bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 text-white"
+                      ? "bg-white hover:bg-green-50 border-slate-300 text-slate-700 hover:text-green-700 hover:border-green-300"
+                      : "bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white border-0"
                   )}
                 >
                   {action.label}
@@ -154,7 +154,7 @@ export function SearchWelcome({
 
   return (
     <EmptyState
-      icon={<BookOpen className="h-10 w-10 text-purple-600" />}
+      icon={<BookOpen className="h-10 w-10 text-green-600" />}
       title={showDiscoverText ? "Discover Academic Papers" : "Academic Papers"}
       description={showDiscoverText
         ? "Search through millions of academic papers to find the research that matters to you."

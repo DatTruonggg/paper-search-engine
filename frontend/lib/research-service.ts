@@ -4,6 +4,46 @@ import type { SearchMode, SearchFilters } from "@/components/main-search-interfa
 import type { PaperResult } from "@/components/paper-results-panel"
 import { apiFetch } from "@/lib/apiClient"
 
+// Backend search response models
+export interface BackendSearchResponse {
+  results: Array<{
+    paper_id: string
+    title: string
+    authors: string[]
+    abstract: string
+    score: number
+    categories: string[]
+    publish_date: string
+    word_count: number
+    has_images: boolean
+    pdf_size: number
+  }>
+  total: number
+  query: string
+  search_mode: string
+}
+
+export interface BackendAgentResponse {
+  success: boolean
+  query: string
+  papers: Array<{
+    paper_id: string
+    title: string
+    authors: string[]
+    abstract: string
+    score: number
+    categories: string[]
+    publish_date: string
+    word_count: number
+    has_images: boolean
+    pdf_size: number
+  }>
+  total_found: number
+  search_iterations: number
+  error?: string
+}
+
+// Frontend response model (what the UI expects)
 export interface SearchResponse {
   contextId: string
   papers: PaperResult[]
@@ -12,166 +52,151 @@ export interface SearchResponse {
   pageSize: number
 }
 
-export interface QAResponse {
-  answer: string
-  sources: PaperResult[]
-  evidence: Array<{ paperId: string; locator?: { page?: number; paragraph?: number }; snippet?: string; score?: number }>
-}
-
-export interface SummaryResponse {
-  summary: string
-  keyPapers: PaperResult[]
-  topics: Array<{ name: string; papers: string[] }>
-}
-
-export interface RetrievalParams {
-  topK?: number
-  rerankK?: number
-  maxChunksPerDoc?: number
-}
+// Note: QA, Summary, and other interfaces removed as they're not implemented in backend
 
 export class ResearchService {
-  async searchPapers(query: string, filters?: SearchFilters, page = 1, pageSize = 20, sort: string = "relevance") {
-    return apiFetch<SearchResponse>(`/v1/search`, {
+  // Helper function to transform backend paper data to frontend PaperResult
+  private transformPaper(backendPaper: any): PaperResult {
+    return {
+      id: backendPaper.paper_id,
+      title: backendPaper.title,
+      authors: backendPaper.authors || [],
+      abstract: backendPaper.abstract || "",
+      citationCount: 0, // Not available in backend
+      publicationDate: backendPaper.publish_date || "",
+      venue: "", // Not available in backend
+      doi: "", // Not available in backend
+      url: backendPaper.minio_pdf_url || `https://arxiv.org/pdf/${backendPaper.paper_id}`, // Use PDF URL if available
+      keywords: backendPaper.categories || [],
+      pdfUrl: backendPaper.minio_pdf_url || `https://arxiv.org/pdf/${backendPaper.paper_id}`, // Use PDF URL if available
+      isBookmarked: false,
+      isOpenAccess: false, // Not available in backend
+      impactFactor: backendPaper.score || 0,
+      journalRank: ""
+    }
+  }
+
+  async searchPapers(
+    query: string,
+    filters?: SearchFilters,
+    page = 1,
+    pageSize = 20,
+    backendMode: 'fulltext' | 'hybrid' | 'semantic' = 'fulltext',
+  ): Promise<SearchResponse> {
+    // Map frontend parameters to backend SearchRequest model
+    const searchRequest = {
+      query,
+      max_results: pageSize,
+      search_mode: backendMode,
+      // Only date and author currently supported in UI
+      date_from: filters?.dateRange?.from,
+      date_to: filters?.dateRange?.to,
+      author: filters?.authors?.[0] // Take first author if multiple
+    }
+
+    const backendResponse = await apiFetch<BackendSearchResponse>(`/api/v1/search`, {
       method: 'POST',
-      body: JSON.stringify({ query, filters, page, pageSize, sort }),
+      body: JSON.stringify(searchRequest),
+    })
+
+    // Transform backend response to frontend format
+    return {
+      contextId: `search_${Date.now()}`, // Generate a context ID
+      papers: backendResponse.results.map((paper) => this.transformPaper(paper)),
+      total: backendResponse.total,
+      page: page,
+      pageSize: pageSize
+    }
+  }
+
+  async searchPapersWithAgent(query: string, _filters?: SearchFilters, page = 1, pageSize = 20): Promise<SearchResponse> {
+    // Map to backend LlamaSearchRequest model
+    const agentRequest = {
+      query,
+      max_results: pageSize,
+      enable_iterations: true,
+      include_summaries: true
+    }
+
+    const backendResponse = await apiFetch<BackendAgentResponse>(`/api/v1/llama/search`, {
+      method: 'POST',
+      body: JSON.stringify(agentRequest),
+      timeoutMs: 300000, // Allow longer runtime for agent searches
+    })
+
+    // Transform backend agent response to frontend format
+    return {
+      contextId: `agent_search_${Date.now()}`, // Generate a context ID
+      papers: backendResponse.papers.map((paper) => {
+        const mapped = this.transformPaper(paper)
+        // Attach evidence chunks if present
+        ;(mapped as any).evidenceChunks = (paper as any).evidence_chunks?.map((c: any) => ({
+          chunk_text: c.chunk_text,
+          relevance_score: c.relevance_score,
+        })) || []
+        return mapped
+      }),
+      total: backendResponse.total_found,
+      page: page,
+      pageSize: pageSize
+    }
+  }
+
+  // Paper details API integration
+  async getPaperDetails(paperId: string) {
+    return apiFetch<{
+      paper_id: string
+      title: string
+      authors: string[]
+      abstract: string
+      content: string
+      content_length: number
+      categories: string[]
+      publish_date: string
+      word_count: number
+      chunk_count: number
+      has_images: boolean
+      pdf_size: number
+      downloaded_at: string
+      indexed_at: string
+      markdown_path: string
+      pdf_path: string
+      minio_pdf_url: string
+      minio_markdown_url: string
+    }>(`/api/v1/papers/${encodeURIComponent(paperId)}`, { method: 'GET' })
+  }
+
+  async findSimilarPapers(paperId: string, maxResults = 10) {
+    return apiFetch<{
+      reference_paper_id: string
+      similar_papers: Array<{
+        paper_id: string
+        title: string
+        authors: string[]
+        abstract: string
+        similarity_score: number
+        categories: string[]
+        publish_date: string
+      }>
+      total: number
+    }>(`/api/v1/papers/${encodeURIComponent(paperId)}/similar`, {
+      method: 'POST',
+      body: JSON.stringify({ max_results: maxResults })
     })
   }
 
-  async searchPapersWithAgent(query: string, filters?: SearchFilters, page = 1, pageSize = 20, sort: string = "relevance") {
-    return apiFetch<SearchResponse>(`/v1/search/agent`, {
-      method: 'POST',
-      body: JSON.stringify({ query, filters, page, pageSize, sort }),
-    })
-  }
-
+  // NOTE: Bookmark functionality not implemented in backend yet
   async bookmark(paperId: string, on: boolean) {
-    const method = on ? 'PUT' : 'DELETE'
-    return apiFetch(`/v1/bookmarks/${encodeURIComponent(paperId)}`, { method })
-  }
-
-  async sessionsList() {
-    return apiFetch<{ sessions: any[] }>(`/v1/sessions`, { method: 'GET' })
-  }
-
-  async sessionsCreate(payload: { title: string; mode: SearchMode }) {
-    return apiFetch<{ id: string }>(`/v1/sessions`, { method: 'POST', body: JSON.stringify(payload) })
-  }
-
-  async sessionsPatch(id: string, patch: Partial<{ title: string; mode: SearchMode }>) {
-    return apiFetch(`/v1/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) })
+    // For now, just return success - can be implemented when backend supports it
+    console.warn('Bookmark functionality not yet implemented in backend')
+    return Promise.resolve()
   }
 
   // --- Suggest ---
-  async suggest(q: string) {
-    return apiFetch<{ suggestions: string[] }>(`/v1/suggest?q=${encodeURIComponent(q)}`, { method: 'GET' })
+  async suggest(q: string, maxResults = 5) {
+    return apiFetch<{ query: string; suggestions: string[] }>(`/api/v1/search/suggest?query=${encodeURIComponent(q)}&max_results=${maxResults}`, { method: 'GET' })
   }
 
-  // --- QA ---
-  async qaSelected(params: {
-    question: string
-    paperIds: string[]
-    retrieval?: RetrievalParams
-    citationStyle?: 'APA' | 'IEEE' | 'MLA'
-    conversationId?: string
-  }) {
-    return apiFetch<QAResponse>(`/v1/qa`, {
-      method: 'POST',
-      body: JSON.stringify({
-        mode: 'selected',
-        question: params.question,
-        paperIds: params.paperIds,
-        retrieval: params.retrieval,
-        citationStyle: params.citationStyle,
-        conversationId: params.conversationId,
-      }),
-    })
-  }
-
-  async qaAll(params: {
-    question: string
-    searchContextId: string
-    retrieval?: RetrievalParams
-    citationStyle?: 'APA' | 'IEEE' | 'MLA'
-    conversationId?: string
-  }) {
-    return apiFetch<QAResponse>(`/v1/qa`, {
-      method: 'POST',
-      body: JSON.stringify({
-        mode: 'all',
-        searchContextId: params.searchContextId,
-        question: params.question,
-        retrieval: params.retrieval,
-        citationStyle: params.citationStyle,
-        conversationId: params.conversationId,
-      }),
-    })
-  }
-
-  // --- Summary ---
-  async summarySelected(params: {
-    paperIds: string[]
-    topic?: string
-    scope?: string[]
-    length?: 'short' | 'medium' | 'long'
-    citationStyle?: 'APA' | 'IEEE' | 'MLA'
-  }) {
-    return apiFetch<SummaryResponse>(`/v1/summary`, {
-      method: 'POST',
-      body: JSON.stringify({
-        mode: 'selected',
-        paperIds: params.paperIds,
-        topic: params.topic,
-        scope: params.scope,
-        length: params.length,
-        citationStyle: params.citationStyle,
-      }),
-    })
-  }
-
-  async summaryAll(params: {
-    searchContextId: string
-    topic?: string
-    scope?: string[]
-    length?: 'short' | 'medium' | 'long'
-    citationStyle?: 'APA' | 'IEEE' | 'MLA'
-  }) {
-    return apiFetch<SummaryResponse>(`/v1/summary`, {
-      method: 'POST',
-      body: JSON.stringify({
-        mode: 'all',
-        searchContextId: params.searchContextId,
-        topic: params.topic,
-        scope: params.scope,
-        length: params.length,
-        citationStyle: params.citationStyle,
-      }),
-    })
-  }
-
-  // --- Documents ---
-  async documentsList(params?: { q?: string; tags?: string[]; status?: string; page?: number; pageSize?: number }) {
-    const search = new URLSearchParams()
-    if (params?.q) search.set('q', params.q)
-    if (params?.status) search.set('status', params.status)
-    if (params?.page) search.set('page', String(params.page))
-    if (params?.pageSize) search.set('pageSize', String(params.pageSize))
-    if (params?.tags && params.tags.length) search.set('tags', params.tags.join(','))
-    return apiFetch<{ items: any[]; page: number; pageSize: number; total: number }>(`/v1/documents?${search.toString()}`, { method: 'GET' })
-  }
-
-  async documentsGet(id: string) {
-    return apiFetch(`/v1/documents/${encodeURIComponent(id)}`, { method: 'GET' })
-  }
-
-  async documentsDelete(id: string) {
-    return apiFetch(`/v1/documents/${encodeURIComponent(id)}`, { method: 'DELETE' })
-  }
-
-  async documentsIngestUrl(url: string, opts?: { name?: string; tags?: string[] }) {
-    return apiFetch(`/v1/documents:ingest-url`, {
-      method: 'POST',
-      body: JSON.stringify({ url, name: opts?.name, tags: opts?.tags }),
-    })
-  }
+  // Note: QA, Summary, and Documents endpoints are not implemented in the current backend
+  // These would need to be implemented in the backend first before adding them here
 }

@@ -22,7 +22,6 @@ import {
   Zap,
 } from "lucide-react"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
@@ -31,6 +30,7 @@ import { Command, CommandGroup, CommandItem, CommandList } from "@/components/ui
 import { useSearchShortcuts } from "@/hooks/use-keyboard-shortcuts"
 import { useSearchSuggestions } from "@/hooks/use-search-suggestions"
 import { useDebounce } from "@/hooks/use-debounce"
+// Removed advanced filter modal; keep simple filters only
 
 export type SearchMode = "paper-finder" | "qa" | "summary"
 export type QAMode = "single-paper" | "all-papers"
@@ -38,7 +38,13 @@ export type QAMode = "single-paper" | "all-papers"
 interface MainSearchInterfaceProps {
   mode: SearchMode
   onModeChange: (mode: SearchMode) => void
-  onSearch: (query: string, filters?: SearchFilters, qaMode?: QAMode, isAgentMode?: boolean) => void
+  onSearch: (
+    query: string,
+    filters?: SearchFilters,
+    qaMode?: QAMode,
+    isAgentMode?: boolean,
+    backendMode?: 'fulltext' | 'hybrid' | 'semantic',
+  ) => void
   isLoading?: boolean
   placeholder?: string
   selectedPapers?: Set<string>
@@ -67,6 +73,14 @@ interface MainSearchInterfaceProps {
    * When true, shows the AI agent toggle (only for search page)
    */
   showAgentMode?: boolean
+  /**
+   * When true, disables inline suggestions and related API calls
+   */
+  disableSuggestions?: boolean
+  /**
+   * When provided, forces the agent mode to be active (overrides internal state)
+   */
+  forceAgentMode?: boolean
 }
 
 export interface SearchFilters {
@@ -75,10 +89,7 @@ export interface SearchFilters {
     to: string
   }
   authors?: string[]
-  venues?: string[]
-  minCitations?: number
-  keywords?: string[]
-  openAccess?: boolean
+  // Other fields intentionally unsupported in UI per spec
 }
 
 const FILTER_PRESETS = [
@@ -134,12 +145,17 @@ function MainSearchInterfaceComponent({
   centerOnEmpty = false,
   fancyHero = false,
   showAgentMode = false,
+  disableSuggestions = true,
+  forceAgentMode = false,
 }: MainSearchInterfaceProps) {
   const [query, setQuery] = useState("")
   const [filters, setFilters] = useState<SearchFilters>({})
-  const [showFilters, setShowFilters] = useState(false)
   const [qaMode, setQaMode] = useState<QAMode>("single-paper")
   const [agentMode, setAgentMode] = useState(false)
+  // Use forced agent mode if provided, otherwise use internal state
+  const effectiveAgentMode = forceAgentMode || agentMode
+  const [agentSteps, setAgentSteps] = useState<string[]>([])
+  const [backendSearchMode, setBackendSearchMode] = useState<'fulltext' | 'hybrid' | 'semantic'>("fulltext")
   const [showSuggestions, setShowSuggestions] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -158,11 +174,35 @@ function MainSearchInterfaceComponent({
     }
   }, [query])
 
-  // Debounce query for suggestions
-  const debouncedQuery = useDebounce(query, 300)
+  // Restore loading chip if a search is in progress (e.g., after navigation)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('pse:searchProgress')
+      if (!raw) return
+      const st = JSON.parse(raw) as { inProgress?: boolean; isAgent?: boolean; stepIndex?: number }
+      if (st?.inProgress && st?.isAgent) {
+        setAgentMode(true)
+        const steps = [
+          'Analyzing query',
+          'Planning retrieval strategy',
+          'Fetching candidate papers',
+          'Extracting evidence',
+          'Ranking results',
+        ]
+        const idx = Number.isFinite(st.stepIndex) ? (st.stepIndex as number) : 0
+        setAgentSteps(steps.slice(0, Math.max(1, idx + 1)))
+        // continue timers to end with longer timing
+        const schedule = [15000, 30000, 50000, 75000]
+        schedule.forEach((ms, i) => {
+          window.setTimeout(() => setAgentSteps((s) => (s.includes(steps[i + 1]) ? s : s.concat(steps[i + 1]))), ms)
+        })
+      }
+    } catch {}
+  }, [])
 
-  // Search suggestions
-  const { suggestions } = useSearchSuggestions(debouncedQuery, showSuggestions)
+  // Debounce query for suggestions (optional)
+  const debouncedQuery = useDebounce(query, 300)
+  const suggestions = disableSuggestions ? [] : useSearchSuggestions(debouncedQuery, showSuggestions).suggestions
 
   // Keyboard shortcuts
   const focusSearchInput = () => {
@@ -187,19 +227,60 @@ function MainSearchInterfaceComponent({
   const handleSubmit = useCallback((e: React.FormEvent) => {
     e.preventDefault()
     if (query.trim()) {
-      onSearch(query.trim(), filters, effectiveMode === "qa" ? qaMode : undefined, agentMode)
+      if (effectiveAgentMode) {
+        // Force fake steps to always show when agent mode is enabled
+        const steps = [
+          'Analyzing query',
+          'Planning retrieval strategy',
+          'Fetching candidate papers',
+          'Extracting evidence',
+          'Ranking results',
+        ]
+        // Always start with the first step immediately
+        setAgentSteps([steps[0]])
+
+        // Store search progress state
+        try {
+          localStorage.setItem('pse:searchProgress', JSON.stringify({
+            inProgress: true,
+            isAgent: true,
+            stepIndex: 0
+          }))
+        } catch {}
+
+        // Force the remaining fake steps to show with longer timing
+        const schedule = [15000, 30000, 50000, 75000]
+        schedule.forEach((ms, i) => {
+          window.setTimeout(() => {
+            setAgentSteps((prevSteps) => {
+              // Always add the next step, ensuring we show all fake steps
+              const nextStep = steps[i + 1]
+              if (nextStep && !prevSteps.includes(nextStep)) {
+                return [...prevSteps, nextStep]
+              }
+              return prevSteps
+            })
+            try {
+              const currentState = JSON.parse(localStorage.getItem('pse:searchProgress') || '{}')
+              localStorage.setItem('pse:searchProgress', JSON.stringify({
+                ...currentState,
+                stepIndex: i + 1
+              }))
+            } catch {}
+          }, ms)
+        })
+      } else {
+        // Clear agent steps if not in agent mode
+        setAgentSteps([])
+      }
+      onSearch(query.trim(), filters, effectiveMode === "qa" ? qaMode : undefined, effectiveAgentMode, backendSearchMode)
     }
-  }, [query, filters, effectiveMode, qaMode, agentMode, onSearch])
+  }, [query, filters, effectiveMode, qaMode, effectiveAgentMode, backendSearchMode, onSearch])
 
   const getModeConfig = (searchMode: SearchMode) => {
     switch (searchMode) {
       case "paper-finder":
         return {
-          icon: <Search className="h-4 w-4" />,
-          label: "🔍 Research Discovery Engine",
-          description: "✨ Discover groundbreaking academic papers with intelligent search",
-          placeholder: "Search for papers on machine learning, neural networks, etc.",
-          buttonText: "🚀 Discover Papers",
         }
       case "qa":
         return {
@@ -227,13 +308,14 @@ function MainSearchInterfaceComponent({
     setFilters({})
   }, [])
 
-  const hasActiveFilters = Object.values(filters).some((value) =>
-    Array.isArray(value) ? value.length > 0 : value !== undefined && value !== false,
+  const hasActiveFilters = Boolean(
+    (filters.dateRange?.from && filters.dateRange.from.trim() !== '') ||
+    (filters.dateRange?.to && filters.dateRange.to.trim() !== '') ||
+    (filters.authors && filters.authors.length > 0)
   )
 
   const applyFilterPreset = useCallback((preset: typeof FILTER_PRESETS[0]) => {
     setFilters(preset.filters)
-    setShowFilters(true)
   }, [])
 
   const isHero = effectiveMode === "paper-finder" && centerOnEmpty && totalPapers === 0
@@ -245,7 +327,7 @@ function MainSearchInterfaceComponent({
         <div className="p-4">
           {!hideModeSelector && (
             <div className="flex items-center gap-2 mb-4">
-              <div className="flex rounded-lg border border-border p-1 bg-muted">
+              <div className="flex rounded-lg border border-slate-200 p-1 bg-white shadow-sm">
                 {(["paper-finder", "qa", "summary"] as const).map((searchMode) => {
                   const config = getModeConfig(searchMode)
                   const isActive = effectiveMode === searchMode
@@ -256,10 +338,10 @@ function MainSearchInterfaceComponent({
                       size="sm"
                       onClick={() => onModeChange(searchMode)}
                       className={cn(
-                        "flex items-center gap-2 px-3 py-2",
+                        "flex items-center gap-2 px-3 py-2 transition-colors",
                         isActive
-                          ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90"
-                          : "text-foreground hover:bg-background/50 hover:text-foreground",
+                          ? "bg-green-600 text-white hover:bg-green-700"
+                          : "text-slate-600 hover:bg-green-50 hover:text-green-700",
                       )}
                     >
                       {config.icon}
@@ -274,23 +356,21 @@ function MainSearchInterfaceComponent({
           <div className="mb-4">
             <div className="flex items-center justify-between mb-2">
               <div>
-                <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-600 via-blue-600 to-indigo-600 bg-clip-text text-transparent mb-1">{currentConfig.label}</h2>
-                <p className="text-sm font-medium bg-gradient-to-r from-slate-600 to-slate-500 bg-clip-text text-transparent">{currentConfig.description}</p>
+                <h2 className="text-2xl font-bold bg-gradient-to-r from-green-700 to-emerald-600 bg-clip-text text-transparent mb-1">{currentConfig.label}</h2>
+                <p className="text-sm text-slate-600">{currentConfig.description}</p>
               </div>
-
+              
             </div>
 
-            {agentMode && (
-              <div className="mb-3 p-4 bg-gradient-to-r from-purple-500/10 via-blue-500/10 to-cyan-500/10 border border-purple-200 rounded-xl backdrop-blur-sm shadow-lg">
-                <div className="flex items-center gap-3 text-sm">
-                  <div className="p-1.5 bg-gradient-to-r from-purple-500 to-blue-500 rounded-full shadow-md">
-                    <Zap className="h-3 w-3 text-white" />
-                  </div>
-                  <span className="font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
-                    🤖 AI Agent Mode Active
+            {effectiveAgentMode && (
+              <div className="mb-3 p-3 bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-lg shadow-sm">
+                <div className="flex items-center gap-2 text-sm">
+                  <Zap className="h-4 w-4 text-green-600" />
+                  <span className="font-semibold text-green-700">
+                    AI Agent Mode Active
                   </span>
                 </div>
-                <p className="text-xs text-slate-600 mt-2 leading-relaxed ml-6">
+                <p className="text-xs text-slate-600 mt-1">
                   The AI agent will analyze your query and perform intelligent multi-step searches
                 </p>
               </div>
@@ -298,9 +378,9 @@ function MainSearchInterfaceComponent({
           </div>
 
           {(effectiveMode === "summary" || effectiveMode === "qa") && totalPapers > 0 && (
-            <div className="mb-4 p-3 bg-muted/50 rounded-lg">
+            <div className="mb-4 p-3 bg-gradient-to-r from-green-50/50 to-emerald-50/50 rounded-lg border border-green-100">
               <div className="flex items-center gap-2 text-sm">
-                <CheckSquare className="h-4 w-4 text-primary" />
+                <CheckSquare className="h-4 w-4 text-green-600" />
                 <span className="font-medium">
                   {selectedPapers.size} of {totalPapers} papers selected
                 </span>
@@ -318,39 +398,38 @@ function MainSearchInterfaceComponent({
       {/* Search Interface */}
       <div className="flex-1 flex flex-col">
         {isHero ? (
-          <div className={cn("flex-1 flex items-center justify-center relative",
-            fancyHero && "bg-gradient-to-b from-transparent to-muted/30")}
+          <div className="flex-1 flex items-center justify-center relative bg-gradient-to-br from-green-50/30 to-emerald-50/20"
           >
             {isLoading && (
-              <div className="absolute inset-0 bg-gradient-to-br from-white/95 to-slate-100/95 backdrop-blur-md z-10 flex items-center justify-center">
-                <div className="flex flex-col items-center gap-4 p-8 rounded-3xl bg-white/90 shadow-2xl border border-white/60">
-                  <div className="relative">
-                    <div className="absolute inset-0 animate-ping rounded-full bg-gradient-to-r from-purple-400 to-blue-400 opacity-75"></div>
-                    <div className="relative p-3 bg-gradient-to-r from-purple-500 to-blue-500 rounded-full shadow-xl">
-                      <Loader2 className="h-6 w-6 animate-spin text-white" />
+              <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-10 flex items-center justify-center">
+                <div className="flex flex-col items-center gap-3 p-6 rounded-lg bg-white shadow-lg border border-green-100">
+                  <Loader2 className="h-6 w-6 animate-spin text-green-600" />
+                  {effectiveAgentMode ? (
+                    <div className="w-full max-w-sm">
+                      <p className="text-sm font-medium text-slate-700 mb-2">Agent progress</p>
+                      <ul className="text-xs text-slate-600 space-y-1">
+                        {agentSteps.map((step, idx) => (
+                          <li key={idx} className="flex items-center gap-2">
+                            <span className="inline-block w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                            {step}
+                          </li>
+                        ))}
+                      </ul>
                     </div>
-                  </div>
-                  <p className="text-base font-semibold bg-gradient-to-r from-slate-700 to-slate-600 bg-clip-text text-transparent">
-                    {agentMode ? "🤖 AI Agent is searching..." : "🔍 Searching papers..."}
-                  </p>
+                  ) : (
+                    <p className="text-sm font-medium text-slate-700">Searching papers...</p>
+                  )}
                 </div>
               </div>
             )}
             <div className="max-w-2xl w-full px-6 py-8">
               <div className="text-center mb-10">
-                <h1 className="text-4xl lg:text-6xl font-black bg-gradient-to-r from-purple-600 via-blue-600 to-indigo-600 bg-clip-text text-transparent mb-4 leading-tight animate-pulse">
-                  🔬 Research Discovery Hub
+                <h1 className="text-4xl lg:text-5xl font-bold bg-gradient-to-r from-green-700 to-emerald-700 bg-clip-text text-transparent mb-4">
+                  Research Discovery Hub
                 </h1>
-                {showAgentMode && (
-                  <p className="text-slate-600 mt-4 text-xl font-semibold">
-                    ✨ Discover groundbreaking research with AI-powered search
-                  </p>
-                )}
-                {!showAgentMode && (
-                  <p className="text-slate-600 mt-4 text-xl font-semibold">
-                    Search through academic papers and research
-                  </p>
-                )}
+                <p className="text-slate-600 mt-3 text-lg font-light">
+                  Discover and explore academic papers with intelligent search
+                </p>
               </div>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="relative">
@@ -359,25 +438,25 @@ function MainSearchInterfaceComponent({
                     value={query}
                     onChange={(e) => {
                       setQuery(e.target.value)
-                      setShowSuggestions(true)
+                      if (!disableSuggestions) setShowSuggestions(true)
                     }}
-                    onFocus={() => setShowSuggestions(true)}
-                    onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                    onFocus={() => !disableSuggestions && setShowSuggestions(true)}
+                    onBlur={() => !disableSuggestions && setTimeout(() => setShowSuggestions(false), 200)}
                     placeholder={effectivePlaceholder}
-                    className="pr-12 h-12 lg:h-14 text-base lg:text-lg shadow-sm"
+                    className="pr-12 h-12 lg:h-14 text-base lg:text-lg border-green-200 focus:border-green-400 focus:ring-2 focus:ring-green-400/20 shadow-sm hover:shadow-md transition-shadow"
                     disabled={isLoading}
                   />
                   <Button
                     type="submit"
                     size="sm"
                     disabled={!query.trim() || isLoading}
-                    className="absolute right-2 top-2 lg:top-2.5 h-8 lg:h-9"
+                    className="absolute right-2 top-2 lg:top-2.5 h-8 lg:h-9 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 border-0 text-white shadow-md transition-all"
                   >
                     {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
                   </Button>
 
                   {/* Search suggestions dropdown */}
-                  {showSuggestions && suggestions.length > 0 && (
+                  {!disableSuggestions && showSuggestions && suggestions.length > 0 && (
                     <div className="absolute top-full left-0 right-0 mt-1 bg-popover border border-border rounded-md shadow-lg z-50">
                       <Command>
                         <CommandList className="max-h-48">
@@ -407,17 +486,40 @@ function MainSearchInterfaceComponent({
           </div>
         ) : (
         <div className="p-6 space-y-4 relative">
+          {/* Keep Research Discovery Hub banner even when results are shown */}
+          <div className="mb-4">
+            <h1 className="text-center text-4xl lg:text-5xl font-bold bg-gradient-to-r from-green-700 to-emerald-600 bg-clip-text text-transparent">Research Discovery Hub</h1>
+            <p className="text-center text-slate-600 mt-2 text-lg font-light">Discover and explore academic papers with intelligent search</p>
+          </div>
           {isLoading && (
             <div className="absolute inset-0 bg-background/60 backdrop-blur-sm z-10 rounded-lg flex items-center justify-center">
               <div className="flex flex-col items-center gap-2">
-                <Loader2 className="h-5 w-5 animate-spin text-primary" />
-                <p className="text-xs text-muted-foreground">
-                  {agentMode ? "AI Agent is analyzing..." : "Searching..."}
-                </p>
+                <Loader2 className="h-5 w-5 animate-spin text-green-600" />
+                {effectiveAgentMode ? (
+                  <div className="w-full max-w-sm">
+                    <p className="text-xs text-slate-700 font-medium mb-1">Agent progress</p>
+                    <ul className="text-xs text-slate-600 space-y-1">
+                      {agentSteps.map((step, idx) => (
+                        <li key={idx} className="flex items-center gap-2">
+                          <span className="inline-block w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                          {step}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">Searching...</p>
+                )}
               </div>
             </div>
           )}
           <form onSubmit={handleSubmit} className="space-y-4">
+            {isLoading && effectiveAgentMode && (
+              <div className="flex items-center gap-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-2 py-1 w-fit">
+                <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                Agent progress: {agentSteps[agentSteps.length - 1] || 'Starting...'}
+              </div>
+            )}
             {effectiveMode === "qa" && totalPapers > 0 && (
               <div className="p-4 border border-border rounded-lg bg-card">
                 <h4 className="text-sm font-medium mb-3 flex items-center gap-2">
@@ -448,10 +550,10 @@ function MainSearchInterfaceComponent({
                   value={query}
                   onChange={(e) => {
                     setQuery(e.target.value)
-                    setShowSuggestions(true)
+                    if (!disableSuggestions) setShowSuggestions(true)
                   }}
-                  onFocus={() => setShowSuggestions(true)}
-                  onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                  onFocus={() => !disableSuggestions && setShowSuggestions(true)}
+                  onBlur={() => !disableSuggestions && setTimeout(() => setShowSuggestions(false), 200)}
                   placeholder={effectivePlaceholder}
                   className="min-h-[100px] resize-none pr-12"
                   disabled={isLoading}
@@ -462,12 +564,12 @@ function MainSearchInterfaceComponent({
                   value={query}
                   onChange={(e) => {
                     setQuery(e.target.value)
-                    setShowSuggestions(true)
+                    if (!disableSuggestions) setShowSuggestions(true)
                   }}
-                  onFocus={() => setShowSuggestions(true)}
-                  onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                  onFocus={() => !disableSuggestions && setShowSuggestions(true)}
+                  onBlur={() => !disableSuggestions && setTimeout(() => setShowSuggestions(false), 200)}
                   placeholder={effectivePlaceholder}
-                  className="pr-12"
+                  className="pr-12 h-12 lg:h-14 text-base lg:text-lg border-green-200 focus:border-green-400 focus:ring-2 focus:ring-green-400/20 shadow-sm hover:shadow-md transition-shadow"
                   disabled={isLoading}
                 />
               )}
@@ -481,7 +583,7 @@ function MainSearchInterfaceComponent({
                   (effectiveMode === "summary" && selectedPapers.size === 0) ||
                   (effectiveMode === "qa" && qaMode === "single-paper" && selectedPapers.size === 0)
                 }
-                className="absolute right-2 top-2"
+                className="absolute right-2 top-2 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white border-0 shadow-sm transition-all"
               >
                 {isLoading ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -493,7 +595,7 @@ function MainSearchInterfaceComponent({
               </Button>
 
               {/* Search suggestions dropdown */}
-              {showSuggestions && suggestions.length > 0 && (
+              {!disableSuggestions && showSuggestions && suggestions.length > 0 && (
                 <div className="absolute top-full left-0 right-0 mt-1 bg-popover border border-border rounded-md shadow-lg z-50">
                   <Command>
                     <CommandList className="max-h-48">
@@ -522,201 +624,109 @@ function MainSearchInterfaceComponent({
             </div>
 
             {effectiveMode === "paper-finder" && (
-              <div className="flex items-center gap-2 flex-wrap">
-                {/* Filter Presets */}
-                <div className="flex items-center gap-2 flex-wrap">
-                  {FILTER_PRESETS.map((preset, index) => {
-                    const colors = [
-                      "from-rose-100 to-pink-100 hover:from-rose-200 hover:to-pink-200 text-rose-700 border-rose-200",
-                      "from-blue-100 to-indigo-100 hover:from-blue-200 hover:to-indigo-200 text-blue-700 border-blue-200",
-                      "from-emerald-100 to-green-100 hover:from-emerald-200 hover:to-green-200 text-emerald-700 border-emerald-200",
-                      "from-amber-100 to-yellow-100 hover:from-amber-200 hover:to-yellow-200 text-amber-700 border-amber-200",
-                      "from-purple-100 to-violet-100 hover:from-purple-200 hover:to-violet-200 text-purple-700 border-purple-200"
-                    ]
-                    return (
-                      <Button
-                        key={preset.name}
-                        variant="outline"
-                        size="sm"
-                        onClick={() => applyFilterPreset(preset)}
-                        className={cn(
-                          "text-xs h-8 font-semibold bg-gradient-to-r transition-all duration-300 shadow-sm hover:shadow-md",
-                          colors[index % colors.length]
-                        )}
-                      >
-                        {preset.name}
-                      </Button>
-                    )
-                  })}
+              <div className="space-y-3">
+                <div className="p-2 border rounded-md">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <Filter className="h-4 w-4" /> Filters
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-slate-600">Mode</span>
+                      <Select value={backendSearchMode} onValueChange={(v: 'fulltext'|'hybrid'|'semantic') => setBackendSearchMode(v)}>
+                        <SelectTrigger className="h-8 w-28 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="fulltext">Fulltext</SelectItem>
+                          <SelectItem value="hybrid">Hybrid</SelectItem>
+                          <SelectItem value="semantic">Semantic</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div>
+                      <label className="text-xs text-slate-600">Year From</label>
+                      <Input
+                        placeholder="From"
+                        type="number"
+                        min="1900"
+                        max="2100"
+                        value={filters.dateRange?.from || ""}
+                        className="h-8"
+                        onChange={(e) =>
+                          setFilters((prev) => ({
+                            ...prev,
+                            dateRange: { ...prev.dateRange, from: e.target.value, to: prev.dateRange?.to || "" },
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-600">Year To</label>
+                      <Input
+                        placeholder="To"
+                        type="number"
+                        min="1900"
+                        max="2100"
+                        value={filters.dateRange?.to || ""}
+                        className="h-8"
+                        onChange={(e) =>
+                          setFilters((prev) => ({
+                            ...prev,
+                            dateRange: { ...prev.dateRange, to: e.target.value, from: prev.dateRange?.from || "" },
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-600">Author</label>
+                      <Input
+                        placeholder="Author name"
+                        value={(filters.authors && filters.authors[0]) || ""}
+                        className="h-8"
+                        onChange={(e) => setFilters((prev) => ({ ...prev, authors: e.target.value ? [e.target.value] : [] }))}
+                      />
+                    </div>
+                  </div>
                 </div>
 
-                <Popover open={showFilters} onOpenChange={setShowFilters}>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className={cn(
-                        "gap-2 h-8 font-semibold transition-all duration-300 shadow-sm hover:shadow-md",
-                        hasActiveFilters
-                          ? "bg-gradient-to-r from-purple-100 to-blue-100 border-purple-300 text-purple-700 hover:from-purple-200 hover:to-blue-200"
-                          : "bg-gradient-to-r from-slate-50 to-white hover:from-slate-100 hover:to-slate-50 border-slate-200 text-slate-700"
-                      )}
-                    >
-                      <Filter className="h-4 w-4" />
-                      Custom Filters
-                      {hasActiveFilters && (
-                        <Badge className="ml-1 h-4 px-2 text-xs bg-gradient-to-r from-purple-500 to-blue-500 text-white border-none shadow-sm">
-                          {
-                            Object.values(filters).filter((v) => (Array.isArray(v) ? v.length > 0 : v !== undefined && v !== false))
-                              .length
-                          }
-                        </Badge>
-                      )}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-96 p-4" align="start">
-                    <div className="space-y-4">
-                      <div className="flex items-center justify-between">
-                        <h4 className="font-medium">Custom Filters</h4>
-                        {hasActiveFilters && (
-                          <Button variant="ghost" size="sm" onClick={clearFilters}>
-                            Clear all
-                          </Button>
-                        )}
-                      </div>
-
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium flex items-center gap-2">
-                          <Calendar className="h-4 w-4" />
-                          Publication Year
-                        </label>
-                        <div className="flex gap-2">
-                          <Input
-                            placeholder="From"
-                            type="number"
-                            min="1900"
-                            max="2024"
-                            value={filters.dateRange?.from || ""}
-                            onChange={(e) =>
-                              setFilters((prev) => ({
-                                ...prev,
-                                dateRange: { ...prev.dateRange, from: e.target.value, to: prev.dateRange?.to || "" },
-                              }))
-                            }
-                          />
-                          <Input
-                            placeholder="To"
-                            type="number"
-                            min="1900"
-                            max="2024"
-                            value={filters.dateRange?.to || ""}
-                            onChange={(e) =>
-                              setFilters((prev) => ({
-                                ...prev,
-                                dateRange: { ...prev.dateRange, to: e.target.value, from: prev.dateRange?.from || "" },
-                              }))
-                            }
-                          />
-                        </div>
-                      </div>
-
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium flex items-center gap-2">
-                          <BookOpen className="h-4 w-4" />
-                          Minimum Citations
-                        </label>
-                        <Select
-                          value={filters.minCitations?.toString() || "any"}
-                          onValueChange={(value) =>
-                            setFilters((prev) => ({
-                              ...prev,
-                              minCitations: value === "any" ? undefined : Number.parseInt(value),
-                            }))
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Any" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="any">Any</SelectItem>
-                            <SelectItem value="10">10+</SelectItem>
-                            <SelectItem value="50">50+</SelectItem>
-                            <SelectItem value="100">100+</SelectItem>
-                            <SelectItem value="500">500+</SelectItem>
-                            <SelectItem value="1000">1000+</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium flex items-center gap-2">
-                          <CheckSquare className="h-4 w-4" />
-                          Open Access
-                        </label>
-                        <div className="flex items-center space-x-2">
-                          <Switch
-                            checked={filters.openAccess || false}
-                            onCheckedChange={(checked) =>
-                              setFilters((prev) => ({
-                                ...prev,
-                                openAccess: checked || undefined,
-                              }))
-                            }
-                          />
-                          <span className="text-sm text-muted-foreground">Only show freely accessible papers</span>
-                        </div>
-                      </div>
-                    </div>
-                  </PopoverContent>
-                </Popover>
-
                 {hasActiveFilters && (
-                  <div className="flex flex-wrap gap-2 mt-3">
+                  <div className="flex flex-wrap gap-2">
                     {filters.dateRange?.from && (
-                      <Badge className="text-xs bg-gradient-to-r from-blue-100 to-indigo-100 text-blue-700 border border-blue-200 shadow-sm font-medium">
-                        📅 From {filters.dateRange.from}
+                      <Badge className="text-xs bg-green-50 text-green-700 border border-green-200 font-medium">
+                        From {filters.dateRange.from}
                         <button
                           onClick={() => setFilters(prev => ({
                             ...prev,
                             dateRange: prev.dateRange?.to ? { from: '', to: prev.dateRange.to } : undefined
                           }))}
-                          className="ml-2 hover:bg-blue-200 rounded-full p-0.5 transition-colors"
+                          className="ml-2 hover:bg-green-200 rounded-full p-0.5 transition-colors"
                         >
                           ×
                         </button>
                       </Badge>
                     )}
                     {filters.dateRange?.to && (
-                      <Badge className="text-xs bg-gradient-to-r from-indigo-100 to-purple-100 text-indigo-700 border border-indigo-200 shadow-sm font-medium">
-                        📅 To {filters.dateRange.to}
+                      <Badge className="text-xs bg-green-50 text-green-700 border border-green-200 font-medium">
+                        To {filters.dateRange.to}
                         <button
                           onClick={() => setFilters(prev => ({
                             ...prev,
                             dateRange: prev.dateRange?.from ? { from: prev.dateRange.from, to: '' } : undefined
                           }))}
-                          className="ml-2 hover:bg-indigo-200 rounded-full p-0.5 transition-colors"
+                          className="ml-2 hover:bg-green-200 rounded-full p-0.5 transition-colors"
                         >
                           ×
                         </button>
                       </Badge>
                     )}
-                    {filters.minCitations && (
-                      <Badge className="text-xs bg-gradient-to-r from-amber-100 to-orange-100 text-amber-700 border border-amber-200 shadow-sm font-medium">
-                        📊 {filters.minCitations}+ citations
+                    {filters.authors && filters.authors[0] && (
+                      <Badge className="text-xs bg-green-50 text-green-700 border border-green-200 font-medium">
+                        {filters.authors[0]}
                         <button
-                          onClick={() => setFilters(prev => ({ ...prev, minCitations: undefined }))}
-                          className="ml-2 hover:bg-amber-200 rounded-full p-0.5 transition-colors"
-                        >
-                          ×
-                        </button>
-                      </Badge>
-                    )}
-                    {filters.openAccess && (
-                      <Badge className="text-xs bg-gradient-to-r from-emerald-100 to-green-100 text-emerald-700 border border-emerald-200 shadow-sm font-medium">
-                        🔓 Open Access
-                        <button
-                          onClick={() => setFilters(prev => ({ ...prev, openAccess: undefined }))}
-                          className="ml-2 hover:bg-emerald-200 rounded-full p-0.5 transition-colors"
+                          onClick={() => setFilters(prev => ({ ...prev, authors: [] }))}
+                          className="ml-2 hover:bg-green-200 rounded-full p-0.5 transition-colors"
                         >
                           ×
                         </button>
@@ -764,7 +774,7 @@ function MainSearchInterfaceComponent({
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setQuery("What are the main contributions of these papers?")}
+                      onClick={() => setQuery("")}
                       className="justify-start text-left h-auto p-3"
                     >
                       <div>
