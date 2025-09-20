@@ -37,6 +37,7 @@ export interface BackendAgentResponse {
     word_count: number
     has_images: boolean
     pdf_size: number
+    evidence_sentences?: string[]
   }>
   total_found: number
   search_iterations: number
@@ -72,7 +73,9 @@ export class ResearchService {
       isBookmarked: false,
       isOpenAccess: false, // Not available in backend
       impactFactor: backendPaper.score || 0,
-      journalRank: ""
+      journalRank: "",
+      // Pass through evidence from agent responses if present
+      evidenceSentences: backendPaper.evidence_sentences || backendPaper.evidenceSentences || []
     }
   }
 
@@ -124,16 +127,23 @@ export class ResearchService {
       timeoutMs: 300000, // Allow longer runtime for agent searches
     })
 
+    // Handle agent-declared failures gracefully
+    if (!backendResponse.success) {
+      const err = new Error(backendResponse.error || 'Agent search failed') as Error & { code?: string }
+      const msg = (backendResponse.error || '').toLowerCase()
+      if (msg.includes('quality is too low') || msg.includes('no relevant papers')) {
+        err.code = 'NO_RELEVANT_PAPERS'
+      }
+      throw err
+    }
+
     // Transform backend agent response to frontend format
     return {
       contextId: `agent_search_${Date.now()}`, // Generate a context ID
       papers: backendResponse.papers.map((paper) => {
         const mapped = this.transformPaper(paper)
-        // Attach evidence chunks if present
-        ;(mapped as any).evidenceChunks = (paper as any).evidence_chunks?.map((c: any) => ({
-          chunk_text: c.chunk_text,
-          relevance_score: c.relevance_score,
-        })) || []
+        // Attach evidence sentences if present
+        ;(mapped as any).evidenceSentences = (paper as any).evidence_sentences || []
         return mapped
       }),
       total: backendResponse.total_found,

@@ -30,6 +30,7 @@ export default function SearchPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [searchResults, setSearchResults] = useState<PaperResult[]>([])
   const [isLoading, setIsLoading] = useState(false)
+  const [agentError, setAgentError] = useState<string | null>(null)
   const [lastSearchQuery, setLastSearchQuery] = useState<string>("")
   const [selectedPapers, setSelectedPapers] = useState<Set<string>>(new Set())
   const [lastContextId, setLastContextId] = useState<string | null>(null)
@@ -114,6 +115,7 @@ export default function SearchPage() {
         ? await api.searchPapersWithAgent(query, filters, page, pageSize)
         : await api.searchPapers(query, filters, page, pageSize, backendMode)
       console.log('[search] RESPONSE', resp)
+      setAgentError(null)
 
       // Merge and de-duplicate results by id in a single pass, and persist the exact list we render
       let nextPapers: PaperResult[] = []
@@ -146,8 +148,16 @@ export default function SearchPage() {
       }
 
       persist({ contextId: resp.contextId, papers: nextPapers, selectedIds: [] })
-    } catch (e) {
+    } catch (e: any) {
       console.error("[search] error:", e)
+      if (isAgentMode) {
+        const msg = (e?.message || '').toString()
+        if (e?.code === 'NO_RELEVANT_PAPERS' || msg.toLowerCase().includes('quality is too low') || msg.toLowerCase().includes('no relevant papers')) {
+          setAgentError('No relevant papers were found for this topic in the current database.')
+        } else {
+          setAgentError('The AI agent could not complete the search. Please try again or use manual search.')
+        }
+      }
       if (page === 1) {
         setSearchResults([])
         setLastContextId(null)
@@ -503,6 +513,12 @@ export default function SearchPage() {
             <div className="p-4">
               <OfflineIndicator />
             </div>
+            {agentMode && agentError && (
+              <div className="mx-4 p-4 border border-amber-300 rounded-lg bg-gradient-to-br from-amber-50 to-orange-50 shadow-sm">
+                <div className="text-sm font-semibold text-amber-800 mb-1">No Relevant Papers Found</div>
+                <p className="text-sm text-amber-800">{agentError}</p>
+              </div>
+            )}
             <MainSearchInterface
               mode="paper-finder"
               forceMode="paper-finder"

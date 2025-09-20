@@ -37,6 +37,7 @@ import type { SearchMode } from "./main-search-interface"
 import { PaperSkeletonList } from "./paper-skeleton"
 import { useToast } from "@/hooks/use-toast"
 import { NoResultsFound, SearchWelcome } from "./empty-states"
+import { PaperDetailsModal } from "./paper-details-modal"
 
 export interface PaperResult {
   id: string
@@ -54,6 +55,8 @@ export interface PaperResult {
   isOpenAccess?: boolean
   impactFactor?: number
   journalRank?: string
+  // Optional evidence sentences returned by agent mode
+  evidenceSentences?: string[]
 }
 
 interface PaperResultsPanelProps {
@@ -109,6 +112,8 @@ function PaperResultsPanelComponent({
   const [searchFilter, setSearchFilter] = useState("")
   const [sortBy, setSortBy] = useState<SortOption>("relevance")
   const [sortOrder, setSortOrder] = useState<SortOrder>("desc")
+  const [selectedPaperForModal, setSelectedPaperForModal] = useState<PaperResult | null>(null)
+  const [isModalOpen, setIsModalOpen] = useState(false)
 
   const totalPages = Math.ceil(totalCount / pageSize)
 
@@ -154,6 +159,8 @@ function PaperResultsPanelComponent({
     if (isSelectionMode) {
       handlePaperSelection(paper.id)
     } else {
+      setSelectedPaperForModal(paper)
+      setIsModalOpen(true)
       onPaperSelect?.(paper)
     }
   }
@@ -223,7 +230,19 @@ function PaperResultsPanelComponent({
   }
 
   return (
-    <div className="flex flex-col h-full bg-white border-l border-slate-200 min-h-0">
+    <>
+      <PaperDetailsModal
+        paper={selectedPaperForModal}
+        isOpen={isModalOpen}
+        onClose={() => {
+          setIsModalOpen(false)
+          setSelectedPaperForModal(null)
+        }}
+        onBookmarkToggle={onBookmarkToggle}
+        onViewFullPaper={onViewFullPaper}
+      />
+
+      <div className="flex flex-col h-full bg-white border-l border-slate-200 min-h-0">
       {/* Header */}
       <div className="p-4 border-b border-slate-200 bg-gradient-to-r from-green-50/50 to-emerald-50/50">
         <div className="flex items-center justify-between mb-3">
@@ -645,7 +664,8 @@ function PaperResultsPanelComponent({
           </div>
         </div>
       )}
-    </div>
+      </div>
+    </>
   )
 }
 

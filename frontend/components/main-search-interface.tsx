@@ -406,8 +406,8 @@ function MainSearchInterfaceComponent({
                   <Loader2 className="h-6 w-6 animate-spin text-green-600" />
                   {effectiveAgentMode ? (
                     <div className="w-full max-w-sm">
-                      <p className="text-sm font-medium text-slate-700 mb-2">Agent progress</p>
-                      <ul className="text-xs text-slate-600 space-y-1">
+                      <p className="text-lg font-semibold text-slate-700 mb-2">Agent progress</p>
+                      <ul className="text-xs text-slate-700 space-y-1">
                         {agentSteps.map((step, idx) => (
                           <li key={idx} className="flex items-center gap-2">
                             <span className="inline-block w-2 h-2 rounded-full bg-green-500 animate-pulse" />
@@ -497,7 +497,7 @@ function MainSearchInterfaceComponent({
                 <Loader2 className="h-5 w-5 animate-spin text-green-600" />
                 {effectiveAgentMode ? (
                   <div className="w-full max-w-sm">
-                    <p className="text-xs text-slate-700 font-medium mb-1">Agent progress</p>
+                    <p className="text-sm font-semibold text-slate-700 mb-1">Agent progress</p>
                     <ul className="text-xs text-slate-600 space-y-1">
                       {agentSteps.map((step, idx) => (
                         <li key={idx} className="flex items-center gap-2">
