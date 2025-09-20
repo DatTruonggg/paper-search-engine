@@ -245,22 +245,24 @@ class ESIndexer:
         size: int = 10,
         search_fields: List[str] = None,
         use_semantic: bool = True,
-        use_bm25: bool = True
+        use_bm25: bool = True,
+        filter_query: Dict = None
     ) -> List[Dict]:
         """
-        Perform optimized hybrid search on chunk documents.
-        Aggregates chunks by paper for final results.
+        Perform optimized hybrid search on documents.
+        Can search either paper documents or chunk documents based on filter.
 
         Args:
             query: Text query
             query_embedding: Query embedding for semantic search
-            size: Number of papers to return
+            size: Number of results to return
             search_fields: Fields to search in (default: title, abstract, chunk_text)
             use_semantic: Whether to use semantic search
             use_bm25: Whether to use BM25 text search
+            filter_query: Additional filter query (e.g., {"term": {"doc_type": "paper"}})
 
         Returns:
-            List of search results aggregated by paper
+            List of search results
         """
         if search_fields is None:
             search_fields = ["title^3", "abstract^2", "chunk_text"]
@@ -288,51 +290,87 @@ class ESIndexer:
             if isinstance(query_embedding, np.ndarray):
                 query_embedding = query_embedding.tolist()
 
-            # Title embedding search
-            should_clauses.append({
-                "script_score": {
-                    "query": {"match_all": {}},
-                    "script": {
-                        "source": "cosineSimilarity(params.query_vector, 'title_embedding') + 1.0",
-                        "params": {"query_vector": query_embedding}
-                    },
-                    "boost": 0.4  # 40% weight for title semantic
-                }
-            })
+            # Check what type of documents we're searching
+            is_paper_search = filter_query and filter_query.get("term", {}).get("doc_type") == "paper"
+            is_chunk_search = filter_query and filter_query.get("term", {}).get("doc_type") == "chunk"
 
-            # Abstract embedding search
-            should_clauses.append({
-                "script_score": {
-                    "query": {"match_all": {}},
-                    "script": {
-                        "source": "cosineSimilarity(params.query_vector, 'abstract_embedding') + 1.0",
-                        "params": {"query_vector": query_embedding}
-                    },
-                    "boost": 0.25  # 25% weight for abstract semantic
-                }
-            })
+            if is_paper_search:
+                # For paper documents, use title and abstract embeddings only
+                # Title embedding search
+                should_clauses.append({
+                    "script_score": {
+                        "query": {"match_all": {}},
+                        "script": {
+                            "source": "cosineSimilarity(params.query_vector, 'title_embedding') + 1.0",
+                            "params": {"query_vector": query_embedding}
+                        },
+                        "boost": 0.5  # 50% weight for title semantic
+                    }
+                })
 
-            # Chunk embedding search
-            should_clauses.append({
-                "script_score": {
-                    "query": {"match_all": {}},
-                    "script": {
-                        "source": "cosineSimilarity(params.query_vector, 'chunk_embedding') + 1.0",
-                        "params": {"query_vector": query_embedding}
-                    },
-                    "boost": 0.35  # 35% weight for chunk semantic
-                }
-            })
+                # Abstract embedding search
+                should_clauses.append({
+                    "script_score": {
+                        "query": {"match_all": {}},
+                        "script": {
+                            "source": "cosineSimilarity(params.query_vector, 'abstract_embedding') + 1.0",
+                            "params": {"query_vector": query_embedding}
+                        },
+                        "boost": 0.5  # 50% weight for abstract semantic
+                    }
+                })
+            elif is_chunk_search:
+                # For chunk documents, use chunk embedding only
+                should_clauses.append({
+                    "script_score": {
+                        "query": {"match_all": {}},
+                        "script": {
+                            "source": "cosineSimilarity(params.query_vector, 'chunk_embedding') + 1.0",
+                            "params": {"query_vector": query_embedding}
+                        },
+                        "boost": 1.0  # 100% weight for chunk semantic when searching chunks
+                    }
+                })
+            else:
+                # Mixed or no filter - this shouldn't happen with current architecture
+                log.warning("Semantic search without specific doc_type filter - defaulting to paper search")
+                # Default to paper embeddings
+                should_clauses.append({
+                    "script_score": {
+                        "query": {"match_all": {}},
+                        "script": {
+                            "source": "cosineSimilarity(params.query_vector, 'title_embedding') + 1.0",
+                            "params": {"query_vector": query_embedding}
+                        },
+                        "boost": 0.5
+                    }
+                })
+                should_clauses.append({
+                    "script_score": {
+                        "query": {"match_all": {}},
+                        "script": {
+                            "source": "cosineSimilarity(params.query_vector, 'abstract_embedding') + 1.0",
+                            "params": {"query_vector": query_embedding}
+                        },
+                        "boost": 0.5
+                    }
+                })
 
-        # Build search query with aggregation by paper_id
+        # Build filter list
+        filters = []
+        if filter_query:
+            filters.append(filter_query)
+        else:
+            # Default to searching paper if no filter specified
+            filters.append({"term": {"doc_type": "paper"}})
+
+        # Build search query
         search_body = {
             "query": {
                 "bool": {
                     "should": should_clauses,
                     "minimum_should_match": 1,
-                    "filter": [
-                        {"term": {"doc_type": "chunk"}}
-                    ]
+                    "filter": filters
                 }
             },
             "aggs": {

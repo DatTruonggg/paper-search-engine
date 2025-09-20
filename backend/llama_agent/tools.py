@@ -57,7 +57,7 @@ class PaperSearchTool:
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
         author: Optional[str] = None,
-        include_chunks: bool = True  # Default to True for LlamaIndex agent (full search)
+        include_chunks: bool = False  # Default to False for LlamaIndex agent
     ) -> Dict[str, Any]:
         """
         Search for papers using Elasticsearch.
@@ -99,7 +99,7 @@ class PaperSearchTool:
                     "paper_id": r.paper_id,
                     "title": r.title,
                     "authors": r.authors,
-                    "abstract": r.abstract[:500] if r.abstract else "",  # Truncate for LLM context
+                    "abstract": r.abstract[:],
                     "score": r.score,
                     "categories": r.categories,
                     "publish_date": r.publish_date,
@@ -154,7 +154,7 @@ class PaperSearchTool:
                         "title": details.title,
                         "authors": details.authors,
                         "abstract": details.abstract,
-                        "content": details.content[:2000],  # Truncate for LLM
+                        "content": details.content[:],
                         "categories": details.categories,
                         "publish_date": details.publish_date,
                         "word_count": details.word_count,

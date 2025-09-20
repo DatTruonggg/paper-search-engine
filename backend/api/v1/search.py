@@ -11,9 +11,14 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from backend.api.main import search_service
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
+from backend.llama_agent.config import llama_config
+from backend.llama_agent.query_analyzer import QueryAnalyzer
 from logs import log
 
 router = APIRouter(prefix="/api/v1", tags=["Search"])
+
+# Initialize a single analyzer instance for query refinement
+analyzer = QueryAnalyzer()
 
 
 class SearchRequest(BaseModel):
@@ -62,11 +67,20 @@ async def search_papers(request: SearchRequest, req: Request):
     if not search_service:
         raise HTTPException(status_code=503, detail="Search service not initialized")
 
+    # Lazy import to avoid heavy initialization at module import time
     try:
-        log.info(f"Search request: query='{request.query}', mode={request.search_mode}")
+        # Enhance query using analyzer when enabled
+        enhanced_query = request.query
+        if llama_config.enable_query_analysis:
+            try:
+                enhanced_query = await analyzer.enhance_query(request.query)
+                if enhanced_query and enhanced_query != request.query:
+                    log.info(f"Enhanced query: '{request.query}' -> '{enhanced_query}'")
+            except Exception as refine_err:
+                log.warning(f"Query refinement skipped due to error: {refine_err}")
 
         results = search_service.search(
-            query=request.query,
+            query=enhanced_query,
             max_results=request.max_results,
             search_mode=request.search_mode,
             categories=request.categories,
@@ -120,11 +134,20 @@ async def search_full_papers(request: SearchRequest, req: Request):
     if not search_service:
         raise HTTPException(status_code=503, detail="Search service not initialized")
 
+    # Lazy import to avoid heavy initialization at module import time
     try:
-        log.info(f"Full paper search request: query='{request.query}', mode={request.search_mode}")
+        # Enhance query using analyzer when enabled (full paper search)
+        enhanced_query = request.query
+        if llama_config.enable_query_analysis:
+            try:
+                enhanced_query = await analyzer.enhance_query(request.query)
+                if enhanced_query and enhanced_query != request.query:
+                    log.info(f"Enhanced query (full): '{request.query}' -> '{enhanced_query}'")
+            except Exception as refine_err:
+                log.warning(f"Full search query refinement skipped due to error: {refine_err}")
 
         results = search_service.search(
-            query=request.query,
+            query=enhanced_query,
             max_results=request.max_results,
             search_mode=request.search_mode,
             categories=request.categories,

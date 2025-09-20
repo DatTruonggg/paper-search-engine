@@ -16,6 +16,8 @@ from .response_builder import ResponseBuilder, FormattedResponse
 from .evidence_extractor import EvidenceExtractor
 from logs import log
 
+from backend.llama_agent import query_analyzer
+
 
 class PaperSearchAgent:
     """
@@ -291,6 +293,7 @@ class PaperSearchAgent:
             # Analyze query if enabled
             if llama_config.enable_query_analysis:
                 analysis = await self.query_analyzer.analyze_query(query)
+                enhanced_query = await self.query_analyzer.enhance_query(query)
                 log.info(f"Query analysis: type={analysis.query_type}, keywords={analysis.keywords}")
             else:
                 analysis = AnalyzedQuery(
@@ -305,7 +308,7 @@ class PaperSearchAgent:
                 )
 
             # Determine search parameters
-            search_params = self._determine_search_params(analysis, override_mode)
+            search_params = self._determine_search_params(analysis, enhanced_query, override_mode)
 
             # Apply additional filters/parameters
             if extra_params:
@@ -335,11 +338,12 @@ class PaperSearchAgent:
     def _determine_search_params(
         self,
         analysis: AnalyzedQuery,
+        enhanced_query: str,
         override_mode: Optional[str] = None
     ) -> Dict[str, Any]:
         """Determine search parameters from query analysis"""
         params = {
-            "query": (" ".join(analysis.keywords) if analysis.keywords else analysis.original_query),
+            "query": enhanced_query,
             "max_results": llama_config.max_results_per_search,
             "search_mode": override_mode or llama_config.default_search_mode
         }
@@ -365,8 +369,6 @@ class PaperSearchAgent:
                 params["search_mode"] = "fulltext"  # BM25 keyword matching
 
         return params
-
-    # Removed local enhancement; delegate to QueryAnalyzer.enhance_query when needed
 
     async def search(self, query: str) -> FormattedResponse:
         """
@@ -403,11 +405,11 @@ class PaperSearchAgent:
 
                 # If below thresholds, try hybrid
                 if (
-                    (evaluation.quality_score < llama_config.quality_min_score) or
-                    (not evaluation.has_sufficient_results) or
-                    (len(all_results) < llama_config.quality_min_results)
+                    (evaluation.quality_score < llama_config.quality_min_score) 
+                    # or (not evaluation.has_sufficient_results) 
+                    # or (len(all_results) < llama_config.quality_min_results)
                 ) and iterations < llama_config.max_iterations:
-                    log.info("Quality below threshold after fulltext. Trying hybrid mode.")
+                    log.info(f"Quality below threshold after fulltext. Trying hybrid mode. score: {evaluation.quality_score}<{llama_config.quality_min_score}")
                     hybrid_results = await self._search_papers_with_analysis_params(
                         query,
                         override_mode="hybrid",
@@ -420,11 +422,11 @@ class PaperSearchAgent:
                 # Re-evaluate and try semantic if needed
                 evaluation2 = await self.query_analyzer.evaluate_results(query, all_results)
                 if (
-                    (evaluation2.quality_score < llama_config.quality_min_score) or
-                    (not evaluation2.has_sufficient_results) or
-                    (len(all_results) < llama_config.quality_min_results)
+                    (evaluation2.quality_score < llama_config.quality_min_score) 
+                    # or (not evaluation2.has_sufficient_results) 
+                    # or (len(all_results) < llama_config.quality_min_results)
                 ) and iterations < llama_config.max_iterations:
-                    log.info("Quality still low. Trying semantic mode.")
+                    log.info(f"Quality still low. Trying semantic mode. score: {evaluation2.quality_score}<{llama_config.quality_min_score}")
                     semantic_results = await self._search_papers_with_analysis_params(
                         query,
                         override_mode="semantic",
@@ -437,14 +439,13 @@ class PaperSearchAgent:
                 # Final attempt: analyzer-produced enhanced query if still below thresholds
                 evaluation3 = await self.query_analyzer.evaluate_results(query, all_results)
                 if (
-                    (evaluation3.quality_score < llama_config.quality_min_score) or
-                    (not evaluation3.has_sufficient_results) or
-                    (len(all_results) < llama_config.quality_min_results)
+                    (evaluation3.quality_score < llama_config.quality_min_score) 
+                    # or (not evaluation3.has_sufficient_results) 
+                    # or (len(all_results) < llama_config.quality_min_results)
                 ) and iterations < llama_config.max_iterations:
-                    log.info("Quality still below threshold. Trying analyzer.enhance_query and hybrid.")
-                    enhanced = await self.query_analyzer.enhance_query(query)
+                    log.info(f"Quality still below threshold. Trying analyzer.enhance_query and hybrid. score: {evaluation3.quality_score}<{llama_config.quality_min_score}")
                     enhanced_results = await self._search_papers_with_analysis_params(
-                        enhanced,
+                        query,
                         override_mode="hybrid",
                         extra_params={"include_chunks": False}
                     )
@@ -453,16 +454,27 @@ class PaperSearchAgent:
                         iterations += 1
 
             # Build final response
-            response = await self.response_builder.build_response(
-                query=query,
-                all_results=all_results,
-                search_iterations=iterations
-            )
+            if evaluation3.quality_score < llama_config.quality_min_score:
+                log.info("Quality still below threshold. Returning empty response")
+                return FormattedResponse(
+                    success=False,
+                    query=query,
+                    papers=[],
+                    total_found=0,
+                    search_iterations=0,
+                    error="Quality is too low. No relevant papers found"
+                )
+            else:
+                response = await self.response_builder.build_response(
+                    query=query,
+                    all_results=all_results,
+                    search_iterations=iterations
+                )
 
-            log.info(
-                f"Search completed: {response.total_found} papers found in {iterations} iterations"
-            )
-            return response
+                log.info(
+                    f"Search completed: {response.total_found} papers found in {iterations} iterations"
+                )
+                return response
 
         except Exception as e:
             log.error(f"Agent search failed: {e}")
@@ -476,6 +488,3 @@ class PaperSearchAgent:
                 response_text="",
                 error=str(e)
             )
-
-    # Chat interface not supported by ReActAgent
-    # Use the search() method for all queries

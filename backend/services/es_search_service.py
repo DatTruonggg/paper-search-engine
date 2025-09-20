@@ -108,6 +108,7 @@ class ElasticsearchSearchService:
     ) -> List[SearchResult]:
         """
         Execute a paper search with hybrid, semantic, or fulltext scoring.
+        Now searches only paper documents for efficiency, unless include_chunks is True.
 
         Args:
             query: Search query text.
@@ -137,14 +138,18 @@ class ElasticsearchSearchService:
 
         log.info(f"Search config - Fields: {search_fields}, Semantic: {use_semantic}, BM25: {use_bm25}")
 
-        # Perform search
+        # Build filter to search only paper documents (unless chunks are requested)
+        doc_type_filter = {"term": {"doc_type": "chunk" if include_chunks else "paper"}}
+
+        # Perform search with doc_type filter
         raw_results = self.indexer.search(
             query=query if use_bm25 else None,
             query_embedding=query_embedding,
             size=max_results * 2,  # Get more for filtering
             search_fields=search_fields,
             use_semantic=use_semantic,
-            use_bm25=use_bm25
+            use_bm25=use_bm25,
+            filter_query=doc_type_filter
         )
 
         log.info(f"ES returned {len(raw_results)} raw results")
@@ -260,6 +265,33 @@ class ElasticsearchSearchService:
                 log.warning(f"Paper not found: {paper_id}")
                 return None
 
+            # Also fetch the single paper document for authoritative metadata
+            paper_search_body = {
+                "query": {
+                    "bool": {
+                        "filter": [
+                            {"term": {"paper_id": paper_id}},
+                            {"term": {"doc_type": "paper"}}
+                        ]
+                    }
+                },
+                "size": 1,
+                "_source": {"excludes": ["*_embedding"]}
+            }
+
+            paper_doc_response = self.indexer.es.search(
+                index=self.indexer.index_name,
+                body=paper_search_body
+            )
+
+            paper_doc_source = None
+            if paper_doc_response.get('hits', {}).get('hits'):
+                paper_doc_source = paper_doc_response['hits']['hits'][0].get('_source', {})
+                log.debug(
+                    f"Found paper document for {paper_id} with fields: "
+                    f"authors={bool(paper_doc_source.get('authors'))}, abstract={bool(paper_doc_source.get('abstract'))}"
+                )
+
             # Get paper metadata from first chunk
             first_chunk = chunks[0]['_source']
 
@@ -272,8 +304,9 @@ class ElasticsearchSearchService:
             return PaperDetails(
                 paper_id=first_chunk.get('paper_id', ''),
                 title=first_chunk.get('title', 'Untitled'),
-                authors=first_chunk.get('authors', []),
-                abstract=first_chunk.get('abstract', ''),
+                # Prefer authors/abstract from the paper document if available
+                authors=(paper_doc_source.get('authors') if paper_doc_source and paper_doc_source.get('authors') is not None else first_chunk.get('authors', [])),
+                abstract=(paper_doc_source.get('abstract') if paper_doc_source and paper_doc_source.get('abstract') is not None else first_chunk.get('abstract', '')),
                 content=content.strip(),
                 categories=first_chunk.get('categories', []),
                 publish_date=first_chunk.get('publish_date'),
@@ -292,6 +325,83 @@ class ElasticsearchSearchService:
         except Exception as e:
             log.error(f"Error getting paper details: {e}")
             return None
+
+    def get_chunks_for_papers(
+        self,
+        paper_ids: List[str],
+        query: Optional[str] = None,
+        max_chunks_per_paper: int = 5
+    ) -> Dict[str, List[Dict]]:
+        """
+        Retrieve chunks for specific papers, optionally ranked by relevance to a query.
+
+        Args:
+            paper_ids: List of paper IDs to get chunks for
+            query: Optional query to rank chunks by relevance
+            max_chunks_per_paper: Maximum chunks to return per paper
+
+        Returns:
+            Dictionary mapping paper_id to list of chunk documents
+        """
+        log.info(f"Getting chunks for {len(paper_ids)} papers")
+
+        result = {}
+
+        for paper_id in paper_ids:
+            try:
+                # Build query for this paper's chunks
+                must_clauses = [
+                    {"term": {"paper_id": paper_id}},
+                    {"term": {"doc_type": "chunk"}}
+                ]
+
+                # If query provided, add relevance scoring
+                if query:
+                    search_body = {
+                        "query": {
+                            "bool": {
+                                "must": must_clauses,
+                                "should": [
+                                    {
+                                        "match": {
+                                            "chunk_text": {
+                                                "query": query,
+                                                "boost": 1.0
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                        },
+                        "sort": [{"_score": {"order": "desc"}}],
+                        "size": max_chunks_per_paper
+                    }
+                else:
+                    # No query, just get chunks in order
+                    search_body = {
+                        "query": {"bool": {"must": must_clauses}},
+                        "sort": [{"chunk_index": {"order": "asc"}}],
+                        "size": max_chunks_per_paper
+                    }
+
+                response = self.indexer.es.search(
+                    index=self.indexer.index_name,
+                    body=search_body
+                )
+
+                chunks = []
+                for hit in response['hits']['hits']:
+                    chunk = hit['_source']
+                    chunk['_score'] = hit.get('_score', 0)
+                    chunks.append(chunk)
+
+                result[paper_id] = chunks
+
+            except Exception as e:
+                log.error(f"Error getting chunks for paper {paper_id}: {e}")
+                result[paper_id] = []
+
+        return result
 
     def find_similar_papers(
         self,
@@ -362,48 +472,54 @@ class ElasticsearchSearchService:
         Returns:
             Dictionary with counts and derived metrics.
         """
-        stats = self.indexer.get_index_stats()
+        base_stats = self.indexer.get_index_stats()
 
-        # Get additional stats for chunk-based index
+        # Compute paper and chunk specific stats using current doc_type structure
         try:
-            # Count unique papers and total chunks
-            search_body = {
+            # Chunk stats: total chunks and unique paper count derived from chunks
+            chunk_stats_body = {
                 "query": {"term": {"doc_type": "chunk"}},
                 "size": 0,
                 "aggs": {
-                    "unique_papers": {
-                        "cardinality": {
-                            "field": "paper_id"
-                        }
-                    },
-                    "categories": {
-                        "terms": {
-                            "field": "categories",
-                            "size": 50
-                        }
-                    }
+                    "unique_papers": {"cardinality": {"field": "paper_id"}}
                 }
             }
+            chunk_resp = self.indexer.es.search(index=self.indexer.index_name, body=chunk_stats_body)
+            total_chunks = chunk_resp.get("hits", {}).get("total", {}).get("value", 0)
+            unique_papers_from_chunks = chunk_resp.get("aggregations", {}).get("unique_papers", {}).get("value", 0)
 
-            response = self.indexer.es.search(index=self.indexer.index_name, body=search_body)
+            # Paper stats: total papers and category distribution should be based on paper docs
+            paper_stats_body = {
+                "query": {"term": {"doc_type": "paper"}},
+                "size": 0,
+                "aggs": {
+                    "categories": {"terms": {"field": "categories", "size": 100}}
+                }
+            }
+            paper_resp = self.indexer.es.search(index=self.indexer.index_name, body=paper_stats_body)
+            total_papers = paper_resp.get("hits", {}).get("total", {}).get("value", 0)
+            category_buckets = paper_resp.get("aggregations", {}).get("categories", {}).get("buckets", [])
+            category_counts = {bucket["key"]: bucket["doc_count"] for bucket in category_buckets}
 
-            # Extract aggregation results
-            unique_papers = response['aggregations']['unique_papers']['value']
-            category_buckets = response['aggregations']['categories']['buckets']
+            # Prefer explicit total_papers from paper docs; fallback to unique papers from chunks
+            if not total_papers and unique_papers_from_chunks:
+                total_papers = unique_papers_from_chunks
 
-            category_counts = {bucket['key']: bucket['doc_count'] for bucket in category_buckets}
+            result = {
+                **base_stats,
+                "total_papers": total_papers,
+                "total_chunks": total_chunks,
+                "category_distribution": category_counts,
+            }
 
-            stats['total_papers'] = unique_papers
-            stats['total_chunks'] = stats.get('document_count', 0)
-            stats['category_distribution'] = category_counts
+            if total_papers > 0:
+                result["avg_chunks_per_paper"] = round(total_chunks / total_papers, 2)
 
-            if unique_papers > 0:
-                stats['avg_chunks_per_paper'] = round(stats['total_chunks'] / unique_papers, 2)
+            return result
 
         except Exception as e:
             log.error(f"Error getting additional stats: {e}")
-
-        return stats
+            return base_stats
 
     def _normalize_scores(self, results: List[SearchResult], search_mode: str) -> List[SearchResult]:
         """

@@ -41,7 +41,7 @@ async def get_paper(paper_id: str, request: Request):
             "title": paper.title,
             "authors": paper.authors,
             "abstract": paper.abstract,
-            "content": paper.content[:1000] + "..." if len(paper.content) > 1000 else paper.content,
+            "content": paper.content[:],
             "content_length": len(paper.content),
             "categories": paper.categories,
             "publish_date": paper.publish_date,

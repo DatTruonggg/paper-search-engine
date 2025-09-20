@@ -70,7 +70,7 @@ class ResponseBuilder:
                     top_papers, query
                 )
 
-                # Convert to response format
+                # Convert to response format with sentences
                 for paper_evidence in papers_with_evidence:
                     formatted_paper = {
                         "paper_id": paper_evidence.paper_id,
@@ -80,22 +80,13 @@ class ResponseBuilder:
                         "categories": paper_evidence.categories,
                         "publish_date": paper_evidence.publish_date,
                         "elasticsearch_score": paper_evidence.elasticsearch_score,
-                        "evidence_chunks": [
-                            {
-                                "chunk_index": chunk.chunk_index,
-                                "chunk_text": chunk.chunk_text,
-                                "relevance_score": chunk.relevance_score,
-                                "chunk_start": chunk.chunk_start,
-                                "chunk_end": chunk.chunk_end
-                            }
-                            for chunk in paper_evidence.evidence_chunks
-                        ]
+                        "evidence_sentences": paper_evidence.evidence_sentences,
                     }
                     formatted_papers.append(formatted_paper)
             else:
-                # No evidence extraction - return papers as-is but add empty evidence_chunks
+                # No evidence extraction - return papers as-is but add empty evidence_sentences
                 for paper in top_papers:
-                    paper["evidence_chunks"] = []
+                    paper["evidence_sentences"] = []
                     formatted_papers.append(paper)
 
             return FormattedResponse(

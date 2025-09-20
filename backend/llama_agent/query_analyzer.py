@@ -181,7 +181,7 @@ class QueryAnalyzer:
         results: List[Dict[str, Any]]
     ) -> ResultEvaluation:
         """
-        Evaluate the quality of search results.
+        Evaluate the quality of search results by title.
 
         Args:
             query: Original search query
@@ -196,9 +196,9 @@ class QueryAnalyzer:
             # Create simple summary of results
             results_summary = f"Found {len(results)} results. "
             if results:
-                top_titles = [r.get('title', 'Untitled')[:50] for r in results[:3]]
-                results_summary += f"Top results: {'; '.join(top_titles)}"
-
+                top_titles_abstracts = ["Title: " + r.get('title', 'Untitled') + ' Abstract: ' + r.get('abstract', 'No abstract')[:] for r in results[:3]]
+                results_summary += f"Top results: {'; '.join(top_titles_abstracts)}"
+                log.info(f"Top results: {'; '.join(top_titles_abstracts[:200])}")
             # Use structured output program
             evaluation: ResultEvaluationOutput = self.evaluation_program(
                 query=query,

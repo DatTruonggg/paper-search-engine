@@ -7,7 +7,6 @@ Combines document chunking, BGE embedding, and ES indexing.
 import os
 import sys
 import argparse
-from logs import log
 from pathlib import Path
 from typing import Dict, List, Optional
 import re
@@ -17,7 +16,7 @@ import json
 
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
-
+from logs import log
 from data_pipeline.bge_embedder import BGEEmbedder
 from data_pipeline.document_chunker import DocumentChunker
 from data_pipeline.es_indexer import ESIndexer
@@ -214,7 +213,7 @@ class PaperProcessor:
                 for para in paragraphs[:5]:
                     para = para.strip()
                     if len(para) > 100 and not para.startswith('#'):
-                        metadata['abstract'] = para[:1000]  # Limit abstract length
+                        metadata['abstract'] = para[:]
                         break
 
         if not metadata['categories']:
@@ -241,15 +240,17 @@ class PaperProcessor:
 
     def process_paper(self, markdown_path: Path) -> Optional[List[Dict]]:
         """
-        Process a single paper: extract metadata, chunk, embed, and prepare chunk documents for indexing.
+        Process a single paper: extract metadata, chunk, embed, and prepare documents for indexing.
 
-        Optimized for search: Returns individual chunk documents instead of one large document.
+        Creates two types of documents:
+        1. One paper document with full metadata
+        2. Multiple chunk documents (one per chunk) with minimal metadata
 
         Args:
             markdown_path: Path to markdown file
 
         Returns:
-            List of chunk documents ready for indexing
+            List of documents ready for indexing (1 paper doc + N chunk docs)
         """
         try:
             # Extract metadata
@@ -273,28 +274,59 @@ class PaperProcessor:
             if paper_data['abstract']:
                 abstract_embedding = self.embedder.encode(paper_data['abstract'])
 
-            # Create chunk documents for ES indexing
-            chunk_documents = []
+            # Handle PDF/MinIO uploads first
+            minio_pdf_url = None
+            minio_md_url = None
+            pdf_path = Path(str(markdown_path).replace('/processed/markdown/', '/pdfs/').replace('.md', '.pdf'))
+            if pdf_path.exists() and self.minio_storage:
+                try:
+                    minio_pdf_url = self.minio_storage.upload_pdf(paper_id, pdf_path)
+                    minio_md_url = self.minio_storage.upload_markdown(paper_id, markdown_path)
+                    log.info(f"Uploaded files to MinIO for paper: {paper_id}")
+                except Exception as e:
+                    log.warning(f"MinIO upload failed for {paper_id}: {e}")
 
+            # Create list to hold all documents
+            documents = []
+
+            # 1. Create the main paper document
+            paper_doc = {
+                'doc_type': 'paper',
+                'paper_id': paper_id,
+                'title': paper_data['title'],
+                'authors': paper_data['authors'],
+                'abstract': paper_data['abstract'],
+                'categories': paper_data['categories'],
+                'publish_date': paper_data['publish_date'],
+                'word_count': paper_data['word_count'],
+                'has_images': paper_data['has_images'],
+                'downloaded_at': paper_data['downloaded_at'],
+                'pdf_size': paper_data['pdf_size'],
+                'markdown_path': paper_data['markdown_path'],
+                'total_chunks': len(chunked_data['content_chunks']) if chunked_data['content_chunks'] else 0,
+
+                # Embeddings for semantic search
+                'title_embedding': title_embedding,
+                'abstract_embedding': abstract_embedding,
+
+                # MinIO URLs if available
+                'minio_pdf_url': minio_pdf_url,
+                'minio_markdown_url': minio_md_url,
+
+                # Timestamp for tracking
+                'indexed_at': datetime.now().isoformat()
+            }
+            documents.append(paper_doc)
+
+            # 2. Create chunk documents (minimal metadata)
             if chunked_data['content_chunks']:
                 chunk_texts = [chunk['text'] for chunk in chunked_data['content_chunks']]
                 chunk_embeddings = self.embedder.encode(chunk_texts, show_progress=False)
 
-                # Create individual chunk documents
                 for i, chunk in enumerate(chunked_data['content_chunks']):
                     chunk_doc = {
-                        # Paper metadata (repeated for each chunk for efficient filtering)
-                        'paper_id': paper_id,
-                        'title': paper_data['title'],
-                        'authors': paper_data['authors'],
-                        'abstract': paper_data['abstract'],
-                        'categories': paper_data['categories'],
-                        'publish_date': paper_data['publish_date'],
-                        'word_count': paper_data['word_count'],
-                        'has_images': paper_data['has_images'],
-                        'downloaded_at': paper_data['downloaded_at'],
-                        'pdf_size': paper_data['pdf_size'],
-                        'markdown_path': paper_data['markdown_path'],
+                        'doc_type': 'chunk',
+                        'paper_id': paper_id,  # Reference to parent paper
 
                         # Chunk-specific data
                         'chunk_index': i,
@@ -302,38 +334,18 @@ class PaperProcessor:
                         'chunk_start': chunk['start_pos'],
                         'chunk_end': chunk['end_pos'],
                         'chunk_embedding': chunk_embeddings[i],
-                        'total_chunks': len(chunked_data['content_chunks']),
 
-                        # Embeddings for semantic search
-                        'title_embedding': title_embedding,
-                        'abstract_embedding': abstract_embedding,
+                        # Minimal paper metadata for filtering/display
+                        'title': paper_data['title'],  # Keep for display purposes
+                        'publish_date': paper_data['publish_date'],  # Keep for date filtering
+                        'categories': paper_data['categories'],  # Keep for category filtering
 
-                        # Document type for ES filtering
-                        'doc_type': 'chunk'
+                        # Timestamp
+                        'indexed_at': datetime.now().isoformat()
                     }
-                    chunk_documents.append(chunk_doc)
+                    documents.append(chunk_doc)
 
-            # Handle PDF uploads to MinIO
-            pdf_path = Path(str(markdown_path).replace('/processed/markdown/', '/pdfs/').replace('.md', '.pdf'))
-            if pdf_path.exists() and self.minio_storage:
-                try:
-                    # Upload PDF
-                    minio_pdf_url = self.minio_storage.upload_pdf(paper_id, pdf_path)
-                    # Upload markdown
-                    minio_md_url = self.minio_storage.upload_markdown(paper_id, markdown_path)
-
-                    # Add MinIO URLs to all chunks
-                    for chunk_doc in chunk_documents:
-                        if minio_pdf_url:
-                            chunk_doc['minio_pdf_url'] = minio_pdf_url
-                        if minio_md_url:
-                            chunk_doc['minio_markdown_url'] = minio_md_url
-
-                    log.info(f"Uploaded files to MinIO for paper: {paper_id}")
-                except Exception as e:
-                    log.warning(f"MinIO upload failed for {paper_id}: {e}")
-
-            return chunk_documents
+            return documents
 
         except Exception as e:
             log.error(f"Error processing {markdown_path}: {e}")
@@ -433,7 +445,7 @@ def main():
     )
     parser.add_argument(
         "--es-host",
-        default="localhost:9200",
+        default="localhost:9202",
         help="Elasticsearch host"
     )
     parser.add_argument(
