@@ -10,6 +10,7 @@ dist/
 downloads/
 eggs/
 .eggs/
+lib/
 lib64/
 parts/
 sdist/
@@ -44,6 +45,7 @@ paper/
 
 # Logs
 *.log
+logs/
 
 # Cache
 .cache/
