@@ -49,11 +49,11 @@ class Config:
 
     # Server Configuration
     API_HOST = os.getenv("API_HOST", "0.0.0.0")
-    API_PORT = int(os.getenv("API_PORT", "8000"))
+    API_PORT = int(os.getenv("API_PORT", "8001"))
     DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
 
     # Elasticsearch Configuration
-    ES_HOST = os.getenv("ES_HOST", "https://9e264300b56f.ngrok-free.app")
+    ES_HOST = os.getenv("ES_HOST", "http://localhost:9202")
     ES_INDEX_NAME = os.getenv("ES_INDEX_NAME", "papers")
 
     # BGE Embedding Configuration
@@ -74,7 +74,7 @@ class Config:
     PDF_LOCAL_DIR = os.getenv("PDF_LOCAL_DIR", "/Users/admin/code/cazoodle/data/pdfs")
 
     # MinIO / Object Storage
-    MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9002")
+    MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://103.3.247.120:9002")
 
     # LlamaIndex Agent Configuration
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")

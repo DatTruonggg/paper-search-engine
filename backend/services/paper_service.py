@@ -2,7 +2,6 @@
 Simple service to combine paper metadata from ES with PDF storage info.
 """
 
-import logging
 from typing import Optional, Dict, Any, List
 import sys
 from pathlib import Path
@@ -13,8 +12,7 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 from backend.services import ElasticsearchSearchService
 from backend.services.pdf_service import PDFService
 
-logger = logging.getLogger(__name__)
-
+from logs import log
 
 class PaperService:
     """Service to manage papers with PDF storage info."""
@@ -27,7 +25,7 @@ class PaperService:
         """Initialize with ES and MinIO connections."""
         self.es_service = ElasticsearchSearchService(es_host=es_host)
         self.pdf_service = PDFService(endpoint=minio_endpoint)
-        logger.info("Paper service initialized")
+        log.info("Paper service initialized")
 
     def get_paper_info(self, paper_id: str) -> Optional[Dict[str, Any]]:
         """

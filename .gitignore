@@ -27,6 +27,8 @@ ENV/
 .venv/
 .ENV/
 
+node_modules/
+.next/
 # Environment variables
 .env
 .env.local

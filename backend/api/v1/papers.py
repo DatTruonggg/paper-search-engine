@@ -9,9 +9,7 @@ Provides functionality for:
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import Dict, Any
-import logging
-
-logger = logging.getLogger(__name__)
+from logs import log
 
 router = APIRouter(prefix="/api/v1/papers", tags=["Papers"])
 
@@ -43,7 +41,7 @@ async def get_paper(paper_id: str, request: Request):
             "title": paper.title,
             "authors": paper.authors,
             "abstract": paper.abstract,
-            "content": paper.content[:1000] + "..." if len(paper.content) > 1000 else paper.content,
+            "content": paper.content[:],
             "content_length": len(paper.content),
             "categories": paper.categories,
             "publish_date": paper.publish_date,
@@ -62,7 +60,7 @@ async def get_paper(paper_id: str, request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting paper {paper_id}: {e}")
+        log.error(f"Error getting paper {paper_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -105,5 +103,5 @@ async def find_similar_papers(paper_id: str, request: SimilarPapersRequest, req:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error finding similar papers for {paper_id}: {e}")
+        log.error(f"Error finding similar papers for {paper_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

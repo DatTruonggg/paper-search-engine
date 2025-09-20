@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, memo } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -21,11 +21,23 @@ import {
   Star,
   StarOff,
   CheckSquare,
+  ChevronLeft,
+  ChevronRight,
+  MoreHorizontal,
+  Loader2,
+  Copy,
+  Award,
+  Lock,
+  Unlock,
 } from "lucide-react"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type { SearchMode } from "./main-search-interface"
+import { PaperSkeletonList } from "./paper-skeleton"
+import { useToast } from "@/hooks/use-toast"
+import { NoResultsFound, SearchWelcome } from "./empty-states"
+import { PaperDetailsModal } from "./paper-details-modal"
 
 export interface PaperResult {
   id: string
@@ -40,6 +52,11 @@ export interface PaperResult {
   keywords?: string[]
   pdfUrl?: string
   isBookmarked?: boolean
+  isOpenAccess?: boolean
+  impactFactor?: number
+  journalRank?: string
+  // Optional evidence sentences returned by agent mode
+  evidenceSentences?: string[]
 }
 
 interface PaperResultsPanelProps {
@@ -52,12 +69,25 @@ interface PaperResultsPanelProps {
   mode?: SearchMode
   selectedPapers?: Set<string>
   onPaperSelectionChange?: (selectedIds: Set<string>) => void
+  // Pagination props
+  totalCount?: number
+  currentPage?: number
+  pageSize?: number
+  onPageChange?: (page: number) => void
+  onLoadMore?: () => void
+  hasNextPage?: boolean
+  isLoadingMore?: boolean
+  paginationMode?: 'pagination' | 'infinite' | 'load-more'
+  // Empty state handlers
+  onSuggestionSearch?: (suggestion: string) => void
+  onClearFilters?: () => void
+  showDiscoverText?: boolean
 }
 
 type SortOption = "relevance" | "citations" | "date" | "title"
 type SortOrder = "asc" | "desc"
 
-export function PaperResultsPanel({
+function PaperResultsPanelComponent({
   papers,
   isLoading = false,
   onPaperSelect,
@@ -67,10 +97,25 @@ export function PaperResultsPanel({
   mode = "paper-finder",
   selectedPapers = new Set(),
   onPaperSelectionChange,
+  totalCount = 0,
+  currentPage = 1,
+  pageSize = 20,
+  onPageChange,
+  onLoadMore,
+  hasNextPage = false,
+  isLoadingMore = false,
+  paginationMode = 'pagination',
+  onSuggestionSearch,
+  onClearFilters,
+  showDiscoverText = false,
 }: PaperResultsPanelProps) {
   const [searchFilter, setSearchFilter] = useState("")
   const [sortBy, setSortBy] = useState<SortOption>("relevance")
   const [sortOrder, setSortOrder] = useState<SortOrder>("desc")
+  const [selectedPaperForModal, setSelectedPaperForModal] = useState<PaperResult | null>(null)
+  const [isModalOpen, setIsModalOpen] = useState(false)
+
+  const totalPages = Math.ceil(totalCount / pageSize)
 
   const isSelectionMode = mode === "summary" || mode === "qa"
 
@@ -114,6 +159,8 @@ export function PaperResultsPanel({
     if (isSelectionMode) {
       handlePaperSelection(paper.id)
     } else {
+      setSelectedPaperForModal(paper)
+      setIsModalOpen(true)
       onPaperSelect?.(paper)
     }
   }
@@ -137,6 +184,32 @@ export function PaperResultsPanel({
     onPaperSelectionChange?.(new Set())
   }
 
+  const { toast } = useToast()
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      toast({
+        title: "Citation copied",
+        description: "The citation has been copied to your clipboard.",
+        duration: 3000,
+      })
+    }).catch(() => {
+      toast({
+        title: "Copy failed",
+        description: "Unable to copy citation to clipboard.",
+        variant: "destructive",
+        duration: 3000,
+      })
+    })
+  }
+
+  const generateCitation = (paper: PaperResult) => {
+    // Generate APA style citation
+    const authors = paper.authors.join(', ')
+    const year = new Date(paper.publicationDate).getFullYear()
+    return `${authors} (${year}). ${paper.title}. ${paper.venue || 'Journal'}. ${paper.doi ? `https://doi.org/${paper.doi}` : paper.url}`
+  }
+
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString("en-US", {
       year: "numeric",
@@ -157,34 +230,46 @@ export function PaperResultsPanel({
   }
 
   return (
-    <div className="flex flex-col h-full bg-card border-l border-border">
+    <>
+      <PaperDetailsModal
+        paper={selectedPaperForModal}
+        isOpen={isModalOpen}
+        onClose={() => {
+          setIsModalOpen(false)
+          setSelectedPaperForModal(null)
+        }}
+        onBookmarkToggle={onBookmarkToggle}
+        onViewFullPaper={onViewFullPaper}
+      />
+
+      <div className="flex flex-col h-full bg-white border-l border-slate-200 min-h-0">
       {/* Header */}
-      <div className="p-4 border-b border-border">
+      <div className="p-4 border-b border-slate-200 bg-gradient-to-r from-green-50/50 to-emerald-50/50">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold text-foreground">
+          <h2 className="text-lg font-semibold text-slate-800">
             Paper Results
             {papers.length > 0 && (
-              <span className="ml-2 text-sm font-normal text-muted-foreground">
+              <span className="ml-2 text-sm font-normal text-slate-600">
                 ({filteredPapers.length} of {papers.length})
               </span>
             )}
           </h2>
           {isSelectionMode && (
-            <Badge variant="secondary" className="text-xs">
+            <Badge variant="secondary" className="text-xs bg-green-100 text-green-700 border-green-200">
               {mode === "summary" ? "Summary Mode" : "Q&A Mode"}
             </Badge>
           )}
         </div>
 
         {isSelectionMode && papers.length > 0 && (
-          <div className="flex items-center gap-2 mb-3 p-2 bg-muted/50 rounded-lg">
-            <CheckSquare className="h-4 w-4 text-primary" />
+          <div className="flex items-center gap-2 mb-3 p-2 bg-green-50 rounded-lg border border-green-100">
+            <CheckSquare className="h-4 w-4 text-green-600" />
             <span className="text-sm font-medium">{selectedPapers.size} selected</span>
             <div className="flex gap-1 ml-auto">
-              <Button variant="ghost" size="sm" onClick={handleSelectAll} className="h-6 px-2 text-xs">
+              <Button variant="ghost" size="sm" onClick={handleSelectAll} className="h-6 px-2 text-xs hover:bg-green-100 hover:text-green-700">
                 All
               </Button>
-              <Button variant="ghost" size="sm" onClick={handleSelectNone} className="h-6 px-2 text-xs">
+              <Button variant="ghost" size="sm" onClick={handleSelectNone} className="h-6 px-2 text-xs hover:bg-green-100 hover:text-green-700">
                 None
               </Button>
             </div>
@@ -196,12 +281,12 @@ export function PaperResultsPanel({
           <div className="space-y-3">
             {/* Search Filter */}
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-slate-400" />
               <Input
                 placeholder="Filter papers..."
                 value={searchFilter}
                 onChange={(e) => setSearchFilter(e.target.value)}
-                className="pl-9"
+                className="pl-9 border-slate-200 focus:border-green-400 focus:ring-2 focus:ring-green-400/20"
               />
             </div>
 
@@ -233,42 +318,43 @@ export function PaperResultsPanel({
       </div>
 
       {/* Results */}
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 min-h-0">
         {isLoading ? (
-          <div className="p-4 space-y-4">
-            {[...Array(3)].map((_, i) => (
-              <Card key={i} className="animate-pulse">
-                <CardHeader className="pb-2">
-                  <div className="h-4 bg-muted rounded w-3/4 mb-2" />
-                  <div className="h-3 bg-muted rounded w-1/2" />
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-2">
-                    <div className="h-3 bg-muted rounded w-full" />
-                    <div className="h-3 bg-muted rounded w-5/6" />
-                    <div className="h-3 bg-muted rounded w-4/6" />
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+          <div className="p-2">
+            <PaperSkeletonList count={6} />
           </div>
-        ) : papers.length === 0 ? (
+        ) : filteredPapers.length === 0 && papers.length > 0 ? (
           <div className="p-8 text-center">
-            <BookOpen className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-foreground mb-2">No papers found</h3>
-            <p className="text-sm text-muted-foreground">
-              {searchQuery ? "Try adjusting your search query or filters" : "Start searching to see paper results here"}
-            </p>
+            <Search className="h-12 w-12 text-slate-400 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-slate-800 mb-2">No matching papers</h3>
+            <p className="text-sm text-slate-600 mb-4">Try adjusting your search filter or clear it to see all papers</p>
+            {onClearFilters && (
+              <Button variant="outline" onClick={onClearFilters} className="text-xs border-green-200 hover:bg-green-50 hover:text-green-700">
+                Clear filters
+              </Button>
+            )}
           </div>
+        ) : papers.length === 0 && searchQuery ? (
+          <NoResultsFound
+            searchQuery={searchQuery}
+            onSuggestionClick={onSuggestionSearch}
+            onClearFilters={onClearFilters}
+          />
+        ) : papers.length === 0 ? (
+          <SearchWelcome
+            onSuggestionClick={onSuggestionSearch}
+            showDiscoverText={showDiscoverText}
+          />
         ) : (
           <div className="p-2 space-y-2">
             {sortedPapers.map((paper) => (
               <Card
                 key={paper.id}
                 className={cn(
-                  "cursor-pointer transition-all hover:shadow-md",
-                  selectedPapers.has(paper.id) && "ring-2 ring-primary",
-                  isSelectionMode && "hover:bg-muted/50",
+                  "group cursor-pointer transition-all duration-200 hover:shadow-lg hover:shadow-green-100/50 hover:border-green-300",
+                  selectedPapers.has(paper.id) && "ring-2 ring-green-400 bg-gradient-to-r from-green-50 to-emerald-50 shadow-md",
+                  isSelectionMode && "hover:bg-gradient-to-r hover:from-green-50/50 hover:to-emerald-50/50",
+                  "border-l-4 border-l-transparent hover:border-l-green-400 bg-white border border-slate-200"
                 )}
                 onClick={() => handlePaperClick(paper)}
               >
@@ -299,9 +385,9 @@ export function PaperResultsPanel({
                               }}
                             >
                               {paper.isBookmarked ? (
-                                <Star className="h-3 w-3 fill-current text-yellow-500" />
+                                <Star className="h-3 w-3 fill-current text-green-600" />
                               ) : (
-                                <StarOff className="h-3 w-3" />
+                                <StarOff className="h-3 w-3 text-slate-400" />
                               )}
                             </Button>
                           </TooltipTrigger>
@@ -313,7 +399,7 @@ export function PaperResultsPanel({
 
                   {/* Authors */}
                   <div
-                    className={cn("flex items-center gap-1 text-xs text-muted-foreground", isSelectionMode && "ml-6")}
+                    className={cn("flex items-center gap-1 text-xs text-slate-500", isSelectionMode && "ml-6")}
                   >
                     <Users className="h-3 w-3" />
                     <span className="line-clamp-1">
@@ -326,39 +412,63 @@ export function PaperResultsPanel({
                 <CardContent className="pt-0">
                   <div className={cn(isSelectionMode && "ml-6")}>
                     {/* Metadata */}
-                    <div className="flex items-center gap-4 mb-3 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-4 mb-3 text-xs text-slate-500 flex-wrap">
                       <div className="flex items-center gap-1">
                         <Quote className="h-3 w-3" />
-                        <span>{formatCitationCount(paper.citationCount)} citations</span>
+                        <span className={cn(
+                          paper.citationCount > 100 && "font-bold text-green-700",
+                          paper.citationCount <= 100 && "text-slate-600"
+                        )}>
+                          {formatCitationCount(paper.citationCount)} citations
+                        </span>
                       </div>
                       <div className="flex items-center gap-1">
                         <Calendar className="h-3 w-3" />
                         <span>{formatDate(paper.publicationDate)}</span>
                       </div>
+                      {paper.impactFactor && (
+                        <div className="flex items-center gap-1">
+                          <Award className="h-3 w-3" />
+                          <span>IF: {paper.impactFactor}</span>
+                        </div>
+                      )}
+                      {paper.isOpenAccess && (
+                        <Badge className="text-xs px-2 py-1 bg-green-100 text-green-700 border border-green-200 font-medium">
+                          <Unlock className="h-2 w-2 mr-1" />
+                          Open Access
+                        </Badge>
+                      )}
                     </div>
 
                     {/* Venue */}
                     {paper.venue && (
-                      <Badge variant="secondary" className="mb-3 text-xs">
-                        {paper.venue}
-                      </Badge>
+                      <div className="mb-3">
+                        <Badge className="text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 font-medium">
+                          {paper.venue}
+                          {paper.journalRank && (
+                            <span className="ml-1 text-xs text-green-700 font-bold">({paper.journalRank})</span>
+                          )}
+                        </Badge>
+                      </div>
                     )}
 
                     {/* Abstract */}
-                    <p className="text-xs text-muted-foreground leading-relaxed mb-3 line-clamp-3">
+                    <p className="text-xs text-slate-600 leading-relaxed mb-3 line-clamp-3">
                       {truncateAbstract(paper.abstract)}
                     </p>
+
+                    {/* Evidence removed per spec */}
 
                     {/* Keywords */}
                     {paper.keywords && paper.keywords.length > 0 && (
                       <div className="flex flex-wrap gap-1 mb-3">
                         {paper.keywords.slice(0, 3).map((keyword, index) => (
-                          <Badge key={index} variant="outline" className="text-xs px-1 py-0">
+                          <Badge key={index} variant="outline" className="text-xs px-1 py-0 border-green-200 text-green-700 hover:bg-green-50">
                             {keyword}
                           </Badge>
                         ))}
                         {paper.keywords.length > 3 && (
-                          <Badge variant="outline" className="text-xs px-1 py-0">
+                          <Badge variant="outline" className="text-xs px-1 py-0 border-green-200 text-green-700">
                             +{paper.keywords.length - 3}
                           </Badge>
                         )}
@@ -370,14 +480,26 @@ export function PaperResultsPanel({
                       <Button
                         variant="outline"
                         size="sm"
-                        className="flex-1 h-7 text-xs bg-transparent"
+                        className="flex-1 h-8 text-xs bg-white hover:bg-green-50 border border-slate-200 hover:border-green-300 transition-all duration-200 shadow-sm hover:shadow-md font-medium text-slate-700 hover:text-green-700"
                         onClick={(e) => {
                           e.stopPropagation()
                           onViewFullPaper?.(paper)
                         }}
                       >
                         <Eye className="h-3 w-3 mr-1" />
-                        View Full Paper
+                        View Paper
+                      </Button>
+
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 w-8 p-0 text-xs bg-white hover:bg-green-50 border border-slate-200 hover:border-green-300 transition-all duration-200 shadow-sm hover:shadow-md"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          copyToClipboard(generateCitation(paper))
+                        }}
+                      >
+                        <Copy className="h-3 w-3 text-slate-600" />
                       </Button>
 
                       {paper.pdfUrl && (
@@ -387,7 +509,7 @@ export function PaperResultsPanel({
                               <Button
                                 variant="outline"
                                 size="sm"
-                                className="h-7 w-7 p-0 bg-transparent"
+                                className="h-7 w-7 p-0 bg-transparent hover:bg-green-50 hover:border-green-300"
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   window.open(paper.pdfUrl, "_blank")
@@ -424,23 +546,127 @@ export function PaperResultsPanel({
                 </CardContent>
               </Card>
             ))}
+
+            {/* Load More Button */}
+            {paginationMode === 'load-more' && hasNextPage && (
+              <div className="p-4 text-center">
+                <Button
+                  onClick={onLoadMore}
+                  disabled={isLoadingMore}
+                  variant="outline"
+                  className="w-full bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white border-0"
+                >
+                  {isLoadingMore ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                      Loading more papers...
+                    </>
+                  ) : (
+                    <>Load More ({totalCount - papers.length} remaining)</>
+                  )}
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </ScrollArea>
 
-      {isSelectionMode && selectedPapers.size > 0 && (
-        <div className="p-3 border-t border-border bg-primary/5">
+      {/* Pagination Controls */}
+      {paginationMode === 'pagination' && totalPages > 1 && papers.length > 0 && (
+        <div className="p-3 border-t border-slate-200 bg-gradient-to-r from-green-50/30 to-emerald-50/30">
           <div className="flex items-center justify-between">
-            <div className="text-sm font-medium text-primary">
+            <div className="text-sm text-slate-600">
+              Showing {((currentPage - 1) * pageSize) + 1}-{Math.min(currentPage * pageSize, totalCount)} of {totalCount} papers
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onPageChange?.(currentPage - 1)}
+                disabled={currentPage === 1 || isLoading}
+                className="h-8 w-8 p-0"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+
+              {/* Page numbers */}
+              <div className="flex items-center gap-1">
+                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                  let pageNum: number
+                  if (totalPages <= 5) {
+                    pageNum = i + 1
+                  } else if (currentPage <= 3) {
+                    pageNum = i + 1
+                  } else if (currentPage >= totalPages - 2) {
+                    pageNum = totalPages - 4 + i
+                  } else {
+                    pageNum = currentPage - 2 + i
+                  }
+
+                  return (
+                    <Button
+                      key={pageNum}
+                      variant={currentPage === pageNum ? "default" : "ghost"}
+                      size="sm"
+                      onClick={() => onPageChange?.(pageNum)}
+                      disabled={isLoading}
+                      className={cn(
+                        "h-8 w-8 p-0 text-xs",
+                        currentPage === pageNum && "bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white border-0"
+                      )}
+                    >
+                      {pageNum}
+                    </Button>
+                  )
+                })}
+
+                {totalPages > 5 && currentPage < totalPages - 2 && (
+                  <>
+                    <MoreHorizontal className="h-4 w-4 text-slate-400" />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onPageChange?.(totalPages)}
+                      disabled={isLoading}
+                      className="h-8 w-8 p-0 text-xs"
+                    >
+                      {totalPages}
+                    </Button>
+                  </>
+                )}
+              </div>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onPageChange?.(currentPage + 1)}
+                disabled={currentPage === totalPages || isLoading}
+                className="h-8 w-8 p-0"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Selection Status - only show if not using pagination */}
+      {isSelectionMode && selectedPapers.size > 0 && paginationMode !== 'pagination' && (
+        <div className="p-3 border-t border-slate-200 bg-green-50">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-medium text-green-700">
               {selectedPapers.size} paper{selectedPapers.size !== 1 ? "s" : ""} selected for{" "}
               {mode === "summary" ? "summarization" : "Q&A"}
             </div>
-            <Button variant="ghost" size="sm" onClick={handleSelectNone} className="text-xs h-6">
+            <Button variant="ghost" size="sm" onClick={handleSelectNone} className="text-xs h-6 hover:bg-green-100 hover:text-green-700">
               Clear
             </Button>
           </div>
         </div>
       )}
-    </div>
+      </div>
+    </>
   )
 }
+
+export const PaperResultsPanel = memo(PaperResultsPanelComponent)

@@ -5,16 +5,13 @@ Handles index creation, document indexing, and search operations.
 """
 
 import json
-import logging
+from logs import log
+
 from typing import Dict, List, Optional, Any
 from elasticsearch import Elasticsearch, helpers
 from elasticsearch.exceptions import RequestError
 import numpy as np
 from datetime import datetime
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 
 class ESIndexer:
     def __init__(
@@ -51,7 +48,7 @@ class ESIndexer:
         if not self.es.ping():
             raise ConnectionError(f"Cannot connect to Elasticsearch at {es_host}")
 
-        logger.info(f"Connected to Elasticsearch at {es_host}")
+        log.info(f"Connected to Elasticsearch at {es_host}")
 
     def create_index(self, force: bool = False):
         """
@@ -61,7 +58,7 @@ class ESIndexer:
             force: If True, delete existing index first
         """
         if force and self.es.indices.exists(index=self.index_name):
-            logger.warning(f"Deleting existing index: {self.index_name}")
+            log.warning(f"Deleting existing index: {self.index_name}")
             self.es.indices.delete(index=self.index_name)
 
         # Index mapping optimized for chunk-based paper search
@@ -148,10 +145,10 @@ class ESIndexer:
 
         try:
             self.es.indices.create(index=self.index_name, body=mapping)
-            logger.info(f"Created index: {self.index_name}")
+            log.info(f"Created index: {self.index_name}")
         except RequestError as e:
             if "resource_already_exists_exception" in str(e):
-                logger.info(f"Index {self.index_name} already exists")
+                log.info(f"Index {self.index_name} already exists")
             else:
                 raise
 
@@ -236,10 +233,10 @@ class ESIndexer:
             request_timeout=60
         )
 
-        logger.info(f"Indexed {success} documents, {len(failed)} failed")
+        log.info(f"Indexed {success} documents, {len(failed)} failed")
 
         if failed:
-            logger.error(f"Failed documents: {failed[:5]}")  # Log first 5 failures
+            log.error(f"Failed documents: {failed[:5]}")  # Log first 5 failures
 
     def search(
         self,
@@ -248,22 +245,24 @@ class ESIndexer:
         size: int = 10,
         search_fields: List[str] = None,
         use_semantic: bool = True,
-        use_bm25: bool = True
+        use_bm25: bool = True,
+        filter_query: Dict = None
     ) -> List[Dict]:
         """
-        Perform optimized hybrid search on chunk documents.
-        Aggregates chunks by paper for final results.
+        Perform optimized hybrid search on documents.
+        Can search either paper documents or chunk documents based on filter.
 
         Args:
             query: Text query
             query_embedding: Query embedding for semantic search
-            size: Number of papers to return
+            size: Number of results to return
             search_fields: Fields to search in (default: title, abstract, chunk_text)
             use_semantic: Whether to use semantic search
             use_bm25: Whether to use BM25 text search
+            filter_query: Additional filter query (e.g., {"term": {"doc_type": "paper"}})
 
         Returns:
-            List of search results aggregated by paper
+            List of search results
         """
         if search_fields is None:
             search_fields = ["title^3", "abstract^2", "chunk_text"]
@@ -271,7 +270,7 @@ class ESIndexer:
         # Build the search query
         should_clauses = []
 
-        logger.info(f"Building ES query - BM25: {use_bm25}, Query: '{query}', Fields: {search_fields}")
+        log.info(f"Building ES query - BM25: {use_bm25}, Query: '{query}', Fields: {search_fields}")
 
         # BM25 text search on chunks
         if use_bm25 and query:
@@ -283,7 +282,7 @@ class ESIndexer:
                     "boost": 0.3  # 30% weight for BM25
                 }
             })
-            logger.debug(f"Added BM25 clause with query: '{query}'")
+            log.debug(f"Added BM25 clause with query: '{query}'")
 
         # Semantic search
         if use_semantic and query_embedding is not None:
@@ -291,51 +290,87 @@ class ESIndexer:
             if isinstance(query_embedding, np.ndarray):
                 query_embedding = query_embedding.tolist()
 
-            # Title embedding search
-            should_clauses.append({
-                "script_score": {
-                    "query": {"match_all": {}},
-                    "script": {
-                        "source": "cosineSimilarity(params.query_vector, 'title_embedding') + 1.0",
-                        "params": {"query_vector": query_embedding}
-                    },
-                    "boost": 0.4  # 40% weight for title semantic
-                }
-            })
+            # Check what type of documents we're searching
+            is_paper_search = filter_query and filter_query.get("term", {}).get("doc_type") == "paper"
+            is_chunk_search = filter_query and filter_query.get("term", {}).get("doc_type") == "chunk"
 
-            # Abstract embedding search
-            should_clauses.append({
-                "script_score": {
-                    "query": {"match_all": {}},
-                    "script": {
-                        "source": "cosineSimilarity(params.query_vector, 'abstract_embedding') + 1.0",
-                        "params": {"query_vector": query_embedding}
-                    },
-                    "boost": 0.25  # 25% weight for abstract semantic
-                }
-            })
+            if is_paper_search:
+                # For paper documents, use title and abstract embeddings only
+                # Title embedding search
+                should_clauses.append({
+                    "script_score": {
+                        "query": {"match_all": {}},
+                        "script": {
+                            "source": "cosineSimilarity(params.query_vector, 'title_embedding') + 1.0",
+                            "params": {"query_vector": query_embedding}
+                        },
+                        "boost": 0.5  # 50% weight for title semantic
+                    }
+                })
 
-            # Chunk embedding search
-            should_clauses.append({
-                "script_score": {
-                    "query": {"match_all": {}},
-                    "script": {
-                        "source": "cosineSimilarity(params.query_vector, 'chunk_embedding') + 1.0",
-                        "params": {"query_vector": query_embedding}
-                    },
-                    "boost": 0.35  # 35% weight for chunk semantic
-                }
-            })
+                # Abstract embedding search
+                should_clauses.append({
+                    "script_score": {
+                        "query": {"match_all": {}},
+                        "script": {
+                            "source": "cosineSimilarity(params.query_vector, 'abstract_embedding') + 1.0",
+                            "params": {"query_vector": query_embedding}
+                        },
+                        "boost": 0.5  # 50% weight for abstract semantic
+                    }
+                })
+            elif is_chunk_search:
+                # For chunk documents, use chunk embedding only
+                should_clauses.append({
+                    "script_score": {
+                        "query": {"match_all": {}},
+                        "script": {
+                            "source": "cosineSimilarity(params.query_vector, 'chunk_embedding') + 1.0",
+                            "params": {"query_vector": query_embedding}
+                        },
+                        "boost": 1.0  # 100% weight for chunk semantic when searching chunks
+                    }
+                })
+            else:
+                # Mixed or no filter - this shouldn't happen with current architecture
+                log.warning("Semantic search without specific doc_type filter - defaulting to paper search")
+                # Default to paper embeddings
+                should_clauses.append({
+                    "script_score": {
+                        "query": {"match_all": {}},
+                        "script": {
+                            "source": "cosineSimilarity(params.query_vector, 'title_embedding') + 1.0",
+                            "params": {"query_vector": query_embedding}
+                        },
+                        "boost": 0.5
+                    }
+                })
+                should_clauses.append({
+                    "script_score": {
+                        "query": {"match_all": {}},
+                        "script": {
+                            "source": "cosineSimilarity(params.query_vector, 'abstract_embedding') + 1.0",
+                            "params": {"query_vector": query_embedding}
+                        },
+                        "boost": 0.5
+                    }
+                })
 
-        # Build search query with aggregation by paper_id
+        # Build filter list
+        filters = []
+        if filter_query:
+            filters.append(filter_query)
+        else:
+            # Default to searching paper if no filter specified
+            filters.append({"term": {"doc_type": "paper"}})
+
+        # Build search query
         search_body = {
             "query": {
                 "bool": {
                     "should": should_clauses,
                     "minimum_should_match": 1,
-                    "filter": [
-                        {"term": {"doc_type": "chunk"}}
-                    ]
+                    "filter": filters
                 }
             },
             "aggs": {
@@ -361,29 +396,25 @@ class ESIndexer:
             "size": 0  # Only get aggregations
         }
 
-        # Log the full query for debugging
-        import json
-        logger.debug(f"Full ES search query: {json.dumps(search_body, indent=2)}")
-
         # Execute search
         response = self.es.search(index=self.index_name, body=search_body)
 
-        logger.info(f"ES response - Total hits: {response.get('hits', {}).get('total', {}).get('value', 0) if isinstance(response.get('hits', {}).get('total', {}), dict) else response.get('hits', {}).get('total', 0)}")
-        logger.debug(f"ES response aggregations: {len(response.get('aggregations', {}).get('papers', {}).get('buckets', []))} paper buckets")
+        log.info(f"ES response - Total hits: {response.get('hits', {}).get('total', {}).get('value', 0) if isinstance(response.get('hits', {}).get('total', {}), dict) else response.get('hits', {}).get('total', 0)}")
+        log.debug(f"ES response aggregations: {len(response.get('aggregations', {}).get('papers', {}).get('buckets', []))} paper buckets")
 
         # Extract aggregated results
         results = []
         for i, bucket in enumerate(response['aggregations']['papers']['buckets']):
-            if i < 3:
-                logger.debug(f"Bucket {i}: paper_id={bucket['key']}, doc_count={bucket['doc_count']}, max_score={bucket['max_score']['value']}")
+            if i < 5:
+                log.debug(f"Bucket {i}: paper_id={bucket['key']}, doc_count={bucket['doc_count']}, max_score={bucket['max_score']['value']}")
 
             # Check if best_chunk has hits
             if 'best_chunk' not in bucket or 'hits' not in bucket['best_chunk'] or 'hits' not in bucket['best_chunk']['hits']:
-                logger.warning(f"Bucket for paper {bucket['key']} has no best_chunk hits!")
+                log.warning(f"Bucket for paper {bucket['key']} has no best_chunk hits!")
                 continue
 
             if len(bucket['best_chunk']['hits']['hits']) == 0:
-                logger.warning(f"Bucket for paper {bucket['key']} has empty hits array!")
+                log.warning(f"Bucket for paper {bucket['key']} has empty hits array!")
                 continue
 
             paper_data = bucket['best_chunk']['hits']['hits'][0]['_source']
@@ -392,16 +423,16 @@ class ESIndexer:
 
             # Log all fields in the first paper for debugging
             if i == 0:
-                logger.info(f"First paper data keys: {list(paper_data.keys())}")
-                logger.info(f"First paper - paper_id: {paper_data.get('paper_id')}, title: {paper_data.get('title', 'N/A')[:50]}")
-                logger.info(f"First paper - categories: {paper_data.get('categories')}, authors: {paper_data.get('authors')}")
+                log.info(f"First paper data keys: {list(paper_data.keys())}")
+                log.info(f"First paper - paper_id: {paper_data.get('paper_id')}, title: {paper_data.get('title', 'N/A')[:50]}")
+                log.info(f"First paper - categories: {paper_data.get('categories')}, authors: {paper_data.get('authors')}")
 
             results.append(paper_data)
 
-            if i < 3:
-                logger.debug(f"Extracted paper {i}: id={paper_data.get('paper_id')}, title={paper_data.get('title', 'N/A')[:50]}")
+            if i < 5:
+                log.debug(f"Extracted paper {i}: id={paper_data.get('paper_id')}, title={paper_data.get('title', 'N/A')[:50]}")
 
-        logger.info(f"Extracted {len(results)} papers from {len(response['aggregations']['papers']['buckets'])} buckets")
+        log.info(f"Extracted {len(results)} papers from {len(response['aggregations']['papers']['buckets'])} buckets")
 
         # Sort by score descending
         results.sort(key=lambda x: x['_score'], reverse=True)

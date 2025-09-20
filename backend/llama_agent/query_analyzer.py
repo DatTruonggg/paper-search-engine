@@ -3,7 +3,6 @@ Query analysis module using Gemini Flash 2.5 for understanding user intent.
 """
 
 import json
-import logging
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from pydantic import BaseModel, Field
@@ -11,10 +10,9 @@ from pydantic import BaseModel, Field
 from llama_index.llms.gemini import Gemini
 from llama_index.core.llms import ChatMessage
 from llama_index.core.program import LLMTextCompletionProgram
-
+from logs import log
 from .config import llama_config
 
-logger = logging.getLogger(__name__)
 
 
 # Pydantic models for LlamaIndex structured output
@@ -35,6 +33,10 @@ class ResultEvaluationOutput(BaseModel):
     has_sufficient_results: bool = Field(description="Whether we have enough results")
     needs_refinement: bool = Field(description="Whether search needs refinement")
     refinement_strategy: Optional[str] = Field(None, description="Strategy for refinement if needed")
+
+class QueryEnhancementOutput(BaseModel):
+    """Structured output for query enhancement"""
+    enhanced_query: str = Field(description="Concise, enhanced retrieval query")
 
 # Dataclass versions for internal use
 @dataclass
@@ -92,6 +94,22 @@ class QueryAnalyzer:
             llm=self.llm
         )
 
+        # Program to enhance a user query for retrieval
+        self.enhancement_program = LLMTextCompletionProgram.from_defaults(
+            output_cls=QueryEnhancementOutput,
+            prompt_template_str=(
+                "Enhance the following research paper search query for retrieval.\n"
+                "Query: {query}\n\n"
+                "Requirements:\n"
+                "- Expand acronyms to their common full terms (e.g., RAG → retrieval augmented generation)\n"
+                "- Use concise wording (<= 15 words)\n"
+                "- Keep essential key terms; remove fluff\n"
+                "Return only the enhanced_query field."
+            ),
+            llm=self.llm
+        )
+
+        # Program to evaluate results quality
         self.evaluation_program = LLMTextCompletionProgram.from_defaults(
             output_cls=ResultEvaluationOutput,
             prompt_template_str=(
@@ -102,6 +120,14 @@ class QueryAnalyzer:
             ),
             llm=self.llm
         )
+
+    async def enhance_query(self, query: str) -> str:
+        """Return an LLM-enhanced retrieval query for a given user query."""
+        try:
+            output: QueryEnhancementOutput = self.enhancement_program(query=query)
+            return output.enhanced_query or query
+        except Exception:
+            return query
 
     async def analyze_query(self, query: str) -> AnalyzedQuery:
         """
@@ -114,7 +140,7 @@ class QueryAnalyzer:
             AnalyzedQuery with extracted information
         """
         try:
-            logger.info(f"Analyzing query: {query}")
+            log.info(f"Analyzing query: {query}")
 
             # Use structured output program
             analysis: QueryAnalysisOutput = self.query_program(query=query)
@@ -131,11 +157,11 @@ class QueryAnalyzer:
                 search_strategy=analysis.search_strategy
             )
 
-            logger.info(f"Query analysis complete: type={result.query_type}")
+            log.info(f"Query analysis complete: type={result.query_type}")
             return result
 
         except Exception as e:
-            logger.error(f"Query analysis failed: {e}")
+            log.error(f"Query analysis failed: {e}")
             # Return basic analysis on error
             safe_keywords = query.split()[:5] if query else ["search"]
             return AnalyzedQuery(
@@ -155,7 +181,7 @@ class QueryAnalyzer:
         results: List[Dict[str, Any]]
     ) -> ResultEvaluation:
         """
-        Evaluate the quality of search results.
+        Evaluate the quality of search results by title.
 
         Args:
             query: Original search query
@@ -165,14 +191,14 @@ class QueryAnalyzer:
             ResultEvaluation with quality assessment
         """
         try:
-            logger.info(f"Evaluating {len(results)} results for query: {query}")
+            log.info(f"Evaluating {len(results)} results for query: {query}")
 
             # Create simple summary of results
             results_summary = f"Found {len(results)} results. "
             if results:
-                top_titles = [r.get('title', 'Untitled')[:50] for r in results[:3]]
-                results_summary += f"Top results: {'; '.join(top_titles)}"
-
+                top_titles_abstracts = ["Title: " + r.get('title', 'Untitled') + ' Abstract: ' + r.get('abstract', 'No abstract')[:] for r in results[:3]]
+                results_summary += f"Top results: {'; '.join(top_titles_abstracts)}"
+                log.info(f"Top results: {'; '.join(top_titles_abstracts[:200])}")
             # Use structured output program
             evaluation: ResultEvaluationOutput = self.evaluation_program(
                 query=query,
@@ -186,11 +212,11 @@ class QueryAnalyzer:
                 refinement_strategy=evaluation.refinement_strategy
             )
 
-            logger.info(f"Evaluation complete: score={result.quality_score}, needs_refinement={result.needs_refinement}")
+            log.info(f"Evaluation complete: score={result.quality_score}, needs_refinement={result.needs_refinement}")
             return result
 
         except Exception as e:
-            logger.error(f"Result evaluation failed: {e}")
+            log.error(f"Result evaluation failed: {e}")
             # Return basic evaluation on error - conservative approach
             avg_score = sum(r.get("score", 0) for r in results[:5]) / min(5, len(results)) if results else 0
             return ResultEvaluation(

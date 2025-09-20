@@ -4,6 +4,7 @@ uvicorn[standard]
 pydantic
 pydantic-settings
 python-dotenv
+loguru
 
 transformers>=4.44.0
 torch>=2.3.0 ; platform_system != "Darwin" or platform_machine != "arm64"
@@ -43,3 +44,4 @@ pypdfium2>=4.30.0
 llama-index
 llama-index-llms-gemini
 llama-index-embeddings-huggingface
+kagglehub

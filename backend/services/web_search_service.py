@@ -3,7 +3,7 @@ Web Search Service for supplementary paper search results.
 Uses web search to find papers not in the local ES index.
 """
 
-import logging
+from logs import log
 import asyncio
 import aiohttp
 from typing import List, Dict, Any, Optional
@@ -14,7 +14,6 @@ from urllib.parse import quote_plus
 from backend.config import config
 from backend.services import SearchResult
 
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,10 +57,10 @@ class WebSearchService:
         Returns:
             List of SearchResult objects
         """
-        logger.info(f"Web searching for academic papers: {query}")
+        log.info(f"Web searching for academic papers: {query}")
 
         if not config.ENABLE_WEB_SEARCH:
-            logger.info("Web search is disabled")
+            log.info("Web search is disabled")
             return []
 
         try:
@@ -71,7 +70,7 @@ class WebSearchService:
             else:
                 return await self._perform_search(query, max_results)
         except Exception as e:
-            logger.error(f"Web search failed: {e}")
+            log.error(f"Web search failed: {e}")
             return []
 
     async def _perform_search(self, query: str, max_results: int) -> List[SearchResult]:
@@ -89,9 +88,9 @@ class WebSearchService:
             try:
                 strategy_results = await search_func(query, max_results // len(search_strategies))
                 results.extend(strategy_results)
-                logger.info(f"{strategy_name} found {len(strategy_results)} results")
+                log.info(f"{strategy_name} found {len(strategy_results)} results")
             except Exception as e:
-                logger.warning(f"{strategy_name} search failed: {e}")
+                log.warning(f"{strategy_name} search failed: {e}")
 
         # Remove duplicates and limit results
         unique_results = self._deduplicate_results(results)
@@ -104,7 +103,7 @@ class WebSearchService:
             scholar_query = f"site:scholar.google.com {query}"
             return await self._search_duckduckgo(scholar_query, max_results, source="Google Scholar")
         except Exception as e:
-            logger.error(f"Google Scholar search failed: {e}")
+            log.error(f"Google Scholar search failed: {e}")
             return []
 
     async def _search_arxiv(self, query: str, max_results: int) -> List[SearchResult]:
@@ -127,11 +126,11 @@ class WebSearchService:
                     content = await response.text()
                     return self._parse_arxiv_xml(content)
                 else:
-                    logger.warning(f"ArXiv API returned status {response.status}")
+                    log.warning(f"ArXiv API returned status {response.status}")
                     return []
 
         except Exception as e:
-            logger.error(f"ArXiv search failed: {e}")
+            log.error(f"ArXiv search failed: {e}")
             return []
 
     async def _search_duckduckgo_academic(self, query: str, max_results: int) -> List[SearchResult]:
@@ -157,11 +156,11 @@ class WebSearchService:
                     data = await response.json()
                     return self._parse_duckduckgo_results(data, source, max_results)
                 else:
-                    logger.warning(f"DuckDuckGo API returned status {response.status}")
+                    log.warning(f"DuckDuckGo API returned status {response.status}")
                     return []
 
         except Exception as e:
-            logger.error(f"DuckDuckGo search failed: {e}")
+            log.error(f"DuckDuckGo search failed: {e}")
             return []
 
     def _parse_arxiv_xml(self, xml_content: str) -> List[SearchResult]:
@@ -221,11 +220,11 @@ class WebSearchService:
                         results.append(result)
 
                 except Exception as e:
-                    logger.warning(f"Failed to parse ArXiv entry: {e}")
+                    log.warning(f"Failed to parse ArXiv entry: {e}")
                     continue
 
         except Exception as e:
-            logger.error(f"Failed to parse ArXiv XML: {e}")
+            log.error(f"Failed to parse ArXiv XML: {e}")
 
         return results
 
@@ -266,7 +265,7 @@ class WebSearchService:
                     results.append(result)
 
         except Exception as e:
-            logger.error(f"Failed to parse DuckDuckGo results: {e}")
+            log.error(f"Failed to parse DuckDuckGo results: {e}")
 
         return results
 
@@ -332,7 +331,7 @@ class WebSearchService:
                 enhanced_papers.append(enhanced_paper)
 
             except Exception as e:
-                logger.warning(f"Failed to enhance paper {paper.paper_id}: {e}")
+                log.warning(f"Failed to enhance paper {paper.paper_id}: {e}")
                 enhanced_papers.append(paper)
 
         return enhanced_papers

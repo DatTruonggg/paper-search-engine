@@ -2,7 +2,6 @@
 Main LlamaIndex ReAct agent for intelligent paper search.
 """
 
-import logging
 from typing import List, Dict, Any, Optional
 import asyncio
 
@@ -15,8 +14,9 @@ from .tools import PaperSearchTool
 from .query_analyzer import QueryAnalyzer, AnalyzedQuery
 from .response_builder import ResponseBuilder, FormattedResponse
 from .evidence_extractor import EvidenceExtractor
+from logs import log
 
-logger = logging.getLogger(__name__)
+from backend.llama_agent import query_analyzer
 
 
 class PaperSearchAgent:
@@ -133,7 +133,7 @@ class PaperSearchAgent:
             # Analyze query if enabled
             if llama_config.enable_query_analysis:
                 analysis = await self.query_analyzer.analyze_query(query)
-                logger.info(f"Query analysis: type={analysis.query_type}, keywords={analysis.keywords}")
+                log.info(f"Query analysis: type={analysis.query_type}, keywords={analysis.keywords}")
             else:
                 analysis = AnalyzedQuery(
                     original_query=query,
@@ -162,7 +162,7 @@ class PaperSearchAgent:
             return results
 
         except Exception as e:
-            logger.error(f"Search with analysis failed: {e}")
+            log.error(f"Search with analysis failed: {e}")
             return {
                 "success": False,
                 "error": str(e),
@@ -184,7 +184,7 @@ class PaperSearchAgent:
         Returns:
             Refined search results
         """
-        logger.info(f"Refining search: {refinement_strategy}")
+        log.info(f"Refining search: {refinement_strategy}")
 
         # Import refinement strategies
         from .config import REFINEMENT_STRATEGIES
@@ -199,24 +199,24 @@ class PaperSearchAgent:
         # Handle PARAPHRASE strategies
         if "paraphrase" in strategy_lower:
             modified_query = self._paraphrase_query(original_query, refinement_strategy)
-            logger.info(f"Paraphrased query: '{original_query}' → '{modified_query}'")
+            log.info(f"Paraphrased query: '{original_query}' → '{modified_query}'")
 
         # Handle FILTER strategies
         elif "filter" in strategy_lower:
             search_params = self._apply_filters(refinement_strategy)
-            logger.info(f"Applied filters: {search_params}")
+            log.info(f"Applied filters: {search_params}")
 
         # Handle MODE_CHANGE strategies
         elif "mode_change" in strategy_lower or "semantic" in strategy_lower:
             if "semantic" in strategy_lower:
                 override_mode = "semantic"
             elif "bm25" in strategy_lower:
-                override_mode = "bm25"
+                override_mode = "fulltext"
             elif "title" in strategy_lower:
                 override_mode = "title_only"
             elif "hybrid" in strategy_lower:
                 override_mode = "hybrid"
-            logger.info(f"Changed search mode to: {override_mode}")
+            log.info(f"Changed search mode to: {override_mode}")
 
         # Handle BROADEN strategies
         elif "broaden" in strategy_lower or "broader" in strategy_lower:
@@ -224,13 +224,13 @@ class PaperSearchAgent:
             words = original_query.split()
             modified_query = " ".join(words[:min(3, len(words))])
             override_mode = "semantic"  # Semantic search is better for broad queries
-            logger.info(f"Broadened query: '{original_query}' → '{modified_query}'")
+            log.info(f"Broadened query: '{original_query}' → '{modified_query}'")
 
         # Handle NARROW strategies
         elif "narrow" in strategy_lower:
             # Add more specific terms or switch to exact matching
-            override_mode = "bm25"  # BM25 is better for specific term matching
-            logger.info(f"Narrowed search with BM25 mode")
+            override_mode = "fulltext"  # BM25 keyword matching
+            log.info(f"Narrowed search with fulltext (BM25) mode")
 
         # Execute refined search with parameters
         return await self._search_papers_with_analysis_params(
@@ -293,7 +293,8 @@ class PaperSearchAgent:
             # Analyze query if enabled
             if llama_config.enable_query_analysis:
                 analysis = await self.query_analyzer.analyze_query(query)
-                logger.info(f"Query analysis: type={analysis.query_type}, keywords={analysis.keywords}")
+                enhanced_query = await self.query_analyzer.enhance_query(query)
+                log.info(f"Query analysis: type={analysis.query_type}, keywords={analysis.keywords}")
             else:
                 analysis = AnalyzedQuery(
                     original_query=query,
@@ -307,14 +308,14 @@ class PaperSearchAgent:
                 )
 
             # Determine search parameters
-            search_params = self._determine_search_params(analysis, override_mode)
+            search_params = self._determine_search_params(analysis, enhanced_query, override_mode)
 
             # Apply additional filters/parameters
             if extra_params:
                 search_params.update(extra_params)
 
             # Execute search
-            results = self.search_tool.search_papers(**search_params)
+            results = await self.search_tool.search_papers(**search_params)
 
             # Add analysis metadata
             results["analysis"] = {
@@ -327,7 +328,7 @@ class PaperSearchAgent:
             return results
 
         except Exception as e:
-            logger.error(f"Enhanced search failed: {e}")
+            log.error(f"Enhanced search failed: {e}")
             return {
                 "success": False,
                 "error": str(e),
@@ -337,11 +338,12 @@ class PaperSearchAgent:
     def _determine_search_params(
         self,
         analysis: AnalyzedQuery,
+        enhanced_query: str,
         override_mode: Optional[str] = None
     ) -> Dict[str, Any]:
         """Determine search parameters from query analysis"""
         params = {
-            "query": " ".join(analysis.keywords) if analysis.keywords else analysis.original_query,
+            "query": enhanced_query,
             "max_results": llama_config.max_results_per_search,
             "search_mode": override_mode or llama_config.default_search_mode
         }
@@ -364,7 +366,7 @@ class PaperSearchAgent:
             if analysis.query_type == "specific_paper":
                 params["search_mode"] = "title_only"
             elif analysis.query_type == "author_search":
-                params["search_mode"] = "bm25"  # Better for names
+                params["search_mode"] = "fulltext"  # BM25 keyword matching
 
         return params
 
@@ -379,70 +381,103 @@ class PaperSearchAgent:
             FormattedResponse with search results
         """
         try:
-            logger.info(f"Starting agent search for: {query}")
+            log.info(f"Starting agent search for: {query}")
 
             # Initialize search state
             all_results = []
             iterations = 0
 
-            # First search iteration
-            initial_results = await self._search_papers_with_analysis(query)
+            # First attempt: fast BM25 (fulltext) over title/abstract using user query
+            initial_results = await self._search_papers_with_analysis_params(
+                query,
+                override_mode="fulltext",
+                extra_params={"include_chunks": False}
+            )
 
             if initial_results.get("success") and initial_results.get("papers"):
                 all_results.extend(initial_results["papers"])
                 iterations = 1
 
-                # Evaluate results if we have any
-                if llama_config.enable_result_reranking and all_results:
-                    evaluation = await self.query_analyzer.evaluate_results(
+            # Evaluate and apply fallback sequence
+            if llama_config.enable_result_reranking:
+                # Evaluate current results (may be empty)
+                evaluation = await self.query_analyzer.evaluate_results(query, all_results)
+
+                # If below thresholds, try hybrid
+                if (
+                    (evaluation.quality_score < llama_config.quality_min_score) 
+                    # or (not evaluation.has_sufficient_results) 
+                    # or (len(all_results) < llama_config.quality_min_results)
+                ) and iterations < llama_config.max_iterations:
+                    log.info(f"Quality below threshold after fulltext. Trying hybrid mode. score: {evaluation.quality_score}<{llama_config.quality_min_score}")
+                    hybrid_results = await self._search_papers_with_analysis_params(
                         query,
-                        all_results
+                        override_mode="hybrid",
+                        extra_params={"include_chunks": False}
                     )
+                    if hybrid_results.get("success") and hybrid_results.get("papers"):
+                        all_results.extend(hybrid_results["papers"])
+                        iterations += 1
 
-                    # Perform refinement if needed
-                    if evaluation.needs_refinement and iterations < llama_config.max_iterations:
-                        logger.info(f"Refining search: {evaluation.refinement_strategy}")
+                # Re-evaluate and try semantic if needed
+                evaluation2 = await self.query_analyzer.evaluate_results(query, all_results)
+                if (
+                    (evaluation2.quality_score < llama_config.quality_min_score) 
+                    # or (not evaluation2.has_sufficient_results) 
+                    # or (len(all_results) < llama_config.quality_min_results)
+                ) and iterations < llama_config.max_iterations:
+                    log.info(f"Quality still low. Trying semantic mode. score: {evaluation2.quality_score}<{llama_config.quality_min_score}")
+                    semantic_results = await self._search_papers_with_analysis_params(
+                        query,
+                        override_mode="semantic",
+                        extra_params={"include_chunks": False}
+                    )
+                    if semantic_results.get("success") and semantic_results.get("papers"):
+                        all_results.extend(semantic_results["papers"])
+                        iterations += 1
 
-                        refined_results = await self._refine_search(
-                            query,
-                            evaluation.refinement_strategy or "Try broader search"
-                        )
-
-                        if refined_results.get("success") and refined_results.get("papers"):
-                            all_results.extend(refined_results["papers"])
-                            iterations += 1
-
-                            # One more evaluation and potential refinement
-                            if iterations < llama_config.max_iterations:
-                                evaluation2 = await self.query_analyzer.evaluate_results(
-                                    query,
-                                    all_results
-                                )
-
-                                if evaluation2.needs_refinement:
-                                    final_results = await self._refine_search(
-                                        query,
-                                        evaluation2.refinement_strategy or "Try semantic search"
-                                    )
-
-                                    if final_results.get("success") and final_results.get("papers"):
-                                        all_results.extend(final_results["papers"])
-                                        iterations += 1
+                # Final attempt: analyzer-produced enhanced query if still below thresholds
+                evaluation3 = await self.query_analyzer.evaluate_results(query, all_results)
+                if (
+                    (evaluation3.quality_score < llama_config.quality_min_score) 
+                    # or (not evaluation3.has_sufficient_results) 
+                    # or (len(all_results) < llama_config.quality_min_results)
+                ) and iterations < llama_config.max_iterations:
+                    log.info(f"Quality still below threshold. Trying analyzer.enhance_query and hybrid. score: {evaluation3.quality_score}<{llama_config.quality_min_score}")
+                    enhanced_results = await self._search_papers_with_analysis_params(
+                        query,
+                        override_mode="hybrid",
+                        extra_params={"include_chunks": False}
+                    )
+                    if enhanced_results.get("success") and enhanced_results.get("papers"):
+                        all_results.extend(enhanced_results["papers"])
+                        iterations += 1
 
             # Build final response
-            response = await self.response_builder.build_response(
-                query=query,
-                all_results=all_results,
-                search_iterations=iterations
-            )
+            if evaluation3.quality_score < llama_config.quality_min_score:
+                log.info("Quality still below threshold. Returning empty response")
+                return FormattedResponse(
+                    success=False,
+                    query=query,
+                    papers=[],
+                    total_found=0,
+                    search_iterations=0,
+                    error="Quality is too low. No relevant papers found"
+                )
+            else:
+                response = await self.response_builder.build_response(
+                    query=query,
+                    all_results=all_results,
+                    search_iterations=iterations
+                )
 
-            logger.info(
-                f"Search completed: {response.total_found} papers found in {iterations} iterations"
-            )
-            return response
+                log.info(
+                    f"Search completed: {response.total_found} papers found in {iterations} iterations"
+                )
+                return response
 
         except Exception as e:
-            logger.error(f"Agent search failed: {e}")
+            log.error(f"Agent search failed: {e}")
             return FormattedResponse(
                 success=False,
                 query=query,
@@ -453,6 +488,3 @@ class PaperSearchAgent:
                 response_text="",
                 error=str(e)
             )
-
-    # Chat interface not supported by ReActAgent
-    # Use the search() method for all queries

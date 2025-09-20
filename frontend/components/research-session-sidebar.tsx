@@ -94,15 +94,15 @@ export function ResearchSessionSidebar({
   }
 
   return (
-    <div className="flex flex-col h-full bg-sidebar">
+    <div className="flex flex-col h-full bg-gradient-to-b from-green-50 to-emerald-50/50">
       {/* Header */}
-      <div className="p-4 border-b border-sidebar-border">
+      <div className="p-4 border-b border-green-200 bg-white/80">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold text-sidebar-foreground">Research Sessions</h2>
+          <h2 className="text-lg font-semibold text-green-800">Research Sessions</h2>
         </div>
         <Button
           onClick={onNewSession}
-          className="w-full justify-start gap-2 bg-sidebar-primary hover:bg-sidebar-accent text-sidebar-primary-foreground hover:text-sidebar-accent-foreground"
+          className="w-full justify-start gap-2 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white shadow-sm transition-all"
         >
           <Plus className="h-4 w-4" />
           New Session
@@ -118,11 +118,11 @@ export function ResearchSessionSidebar({
               <div
                 key={session.id}
                 className={cn(
-                  "group relative rounded-lg p-3 cursor-pointer transition-colors",
-                  "hover:bg-sidebar-accent/50",
+                  "group relative rounded-lg p-3 cursor-pointer transition-all duration-200",
+                  "hover:bg-green-100/50 hover:shadow-sm",
                   isActive
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                    : "text-sidebar-foreground hover:text-sidebar-foreground",
+                    ? "bg-gradient-to-r from-green-100 to-emerald-100 text-green-900 shadow-sm border border-green-200"
+                    : "text-slate-700 hover:text-green-700",
                 )}
                 onClick={() => onSessionSelect(session.id)}
               >
@@ -149,7 +149,7 @@ export function ResearchSessionSidebar({
                           <span
                             className={cn(
                               "text-xs font-medium",
-                              isActive ? "text-sidebar-accent-foreground/80" : "text-sidebar-foreground/70",
+                              isActive ? "text-green-700" : "text-slate-600",
                             )}
                           >
                             {getModeLabel(session.mode)}
@@ -180,7 +180,7 @@ export function ResearchSessionSidebar({
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="opacity-0 group-hover:opacity-100 h-6 w-6 p-0"
+                            className="opacity-0 group-hover:opacity-100 h-6 w-6 p-0 hover:bg-green-100"
                             onClick={(e) => e.stopPropagation()}
                           >
                             <MoreHorizontal className="h-3 w-3" />

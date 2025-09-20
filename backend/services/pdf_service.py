@@ -3,7 +3,7 @@ Simple PDF storage service using MinIO.
 Handles PDF upload/download by paper ID (DOI).
 """
 
-import logging
+from logs import log
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import timedelta
@@ -11,7 +11,6 @@ from datetime import timedelta
 from minio import Minio
 from minio.error import S3Error
 
-logger = logging.getLogger(__name__)
 
 
 class PDFService:
@@ -37,11 +36,11 @@ class PDFService:
         try:
             if not self.client.bucket_exists(bucket_name):
                 self.client.make_bucket(bucket_name)
-                logger.info(f"Created bucket: {bucket_name}")
+                log.info(f"Created bucket: {bucket_name}")
         except S3Error as e:
-            logger.error(f"Error creating bucket: {e}")
+            log.error(f"Error creating bucket: {e}")
 
-        logger.info(f"PDF service initialized with bucket: {bucket_name}")
+        log.info(f"PDF service initialized with bucket: {bucket_name}")
 
     def upload_pdf(self, paper_id: str, pdf_path: Path) -> Dict[str, Any]:
         """
@@ -80,7 +79,7 @@ class PDFService:
             }
 
         except S3Error as e:
-            logger.error(f"Failed to upload PDF for {paper_id}: {e}")
+            log.error(f"Failed to upload PDF for {paper_id}: {e}")
             return {
                 "success": False,
                 "error": str(e)
@@ -111,7 +110,7 @@ class PDFService:
             return url
 
         except S3Error:
-            logger.warning(f"PDF not found for paper_id: {paper_id}")
+            log.warning(f"PDF not found for paper_id: {paper_id}")
             return None
 
     def pdf_exists(self, paper_id: str) -> bool:
@@ -137,7 +136,7 @@ class PDFService:
             return paper_ids
 
         except S3Error as e:
-            logger.error(f"Error listing PDFs: {e}")
+            log.error(f"Error listing PDFs: {e}")
             return []
 
     def get_stats(self) -> Dict[str, Any]:
@@ -156,5 +155,5 @@ class PDFService:
             }
 
         except S3Error as e:
-            logger.error(f"Error getting stats: {e}")
+            log.error(f"Error getting stats: {e}")
             return {"error": str(e)}

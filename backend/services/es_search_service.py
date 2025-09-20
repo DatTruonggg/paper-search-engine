@@ -2,7 +2,6 @@
 Elasticsearch-based search service for paper search engine.
 """
 
-import logging
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 import numpy as np
@@ -16,8 +15,7 @@ from data_pipeline.bge_embedder import BGEEmbedder
 from data_pipeline.es_indexer import ESIndexer
 from backend.config import config
 
-logger = logging.getLogger(__name__)
-
+from logs import log
 
 @dataclass
 class SearchResult:
@@ -80,7 +78,7 @@ class ElasticsearchSearchService:
             bge_model: BGE model name
             bge_cache_dir: Cache directory for BGE model
         """
-        logger.info(f"Initializing Elasticsearch search service...")
+        log.info(f"Initializing Elasticsearch search service...")
 
         # Initialize BGE embedder
         self.embedder = BGEEmbedder(
@@ -95,7 +93,7 @@ class ElasticsearchSearchService:
             embedding_dim=self.embedder.embedding_dim,
         )
 
-        logger.info("Search service initialized successfully")
+        log.info("Search service initialized successfully")
 
     def search(
         self,
@@ -110,6 +108,7 @@ class ElasticsearchSearchService:
     ) -> List[SearchResult]:
         """
         Execute a paper search with hybrid, semantic, or fulltext scoring.
+        Now searches only paper documents for efficiency, unless include_chunks is True.
 
         Args:
             query: Search query text.
@@ -124,50 +123,54 @@ class ElasticsearchSearchService:
         Returns:
             List of SearchResult with normalized scores in [0, 1].
         """
-        logger.info(f"Searching for: '{query}' (mode: {search_mode}, include_chunks: {include_chunks})")
+        log.info(f"Searching for: '{query}' (mode: {search_mode}, include_chunks: {include_chunks})")
 
         # Generate query embedding for semantic search
         query_embedding = None
         if search_mode in ["hybrid", "semantic"]:
             query_embedding = self.embedder.encode(query)
-            logger.debug(f"Generated query embedding with shape: {query_embedding.shape if hasattr(query_embedding, 'shape') else 'unknown'}")
+            log.debug(f"Generated query embedding with shape: {query_embedding.shape if hasattr(query_embedding, 'shape') else 'unknown'}")
 
         # Configure search based on mode
         search_fields = self._get_search_fields(search_mode, include_chunks)
         use_semantic = search_mode in ["hybrid", "semantic"]
         use_bm25 = search_mode in ["hybrid", "fulltext"]
 
-        logger.info(f"Search config - Fields: {search_fields}, Semantic: {use_semantic}, BM25: {use_bm25}")
+        log.info(f"Search config - Fields: {search_fields}, Semantic: {use_semantic}, BM25: {use_bm25}")
 
-        # Perform search
+        # Build filter to search only paper documents (unless chunks are requested)
+        doc_type_filter = {"term": {"doc_type": "chunk" if include_chunks else "paper"}}
+
+        # Perform search with doc_type filter
         raw_results = self.indexer.search(
             query=query if use_bm25 else None,
             query_embedding=query_embedding,
             size=max_results * 2,  # Get more for filtering
             search_fields=search_fields,
             use_semantic=use_semantic,
-            use_bm25=use_bm25
+            use_bm25=use_bm25,
+            filter_query=doc_type_filter
         )
 
-        logger.info(f"ES returned {len(raw_results)} raw results")
+        log.info(f"ES returned {len(raw_results)} raw results")
 
         # Convert to SearchResult objects
         results = []
-        logger.info(f"Processing {len(raw_results)} raw results...")
-        logger.info(f"Active filters - categories: {categories}, author: {author}, date_from: {date_from}, date_to: {date_to}")
+        log.info(f"Processing {len(raw_results)} raw results...")
+        log.info(f"Active filters - categories: {categories}, author: {author}, date_from: {date_from}, date_to: {date_to}")
 
         for i, hit in enumerate(raw_results):
             # Debug first few results
             if i < 3:
-                logger.info(f"Raw result {i}: paper_id={hit.get('paper_id', 'N/A')}, title={hit.get('title', 'N/A')[:50]}, score={hit.get('_score', 0)}")
+                log.info(f"Raw result {i}: paper_id={hit.get('paper_id', 'N/A')}, title={hit.get('title', 'N/A')[:50]}, score={hit.get('_score', 0)}")
 
             # Apply filters
             # if categories and not any(cat in hit.get('categories', []) for cat in categories):
-            #     logger.info(f"Filtered out {hit.get('paper_id', 'unknown')} - categories mismatch. Looking for {categories}, found {hit.get('categories', [])}")
+            #     log.info(f"Filtered out {hit.get('paper_id', 'unknown')} - categories mismatch. Looking for {categories}, found {hit.get('categories', [])}")
             #     continue
 
             if author and author.lower() not in ' '.join(hit.get('authors', [])).lower():
-                logger.info(f"Filtered out {hit.get('paper_id', 'unknown')} - author mismatch. Looking for '{author}', found {hit.get('authors', [])}")
+                log.info(f"Filtered out {hit.get('paper_id', 'unknown')} - author mismatch. Looking for '{author}', found {hit.get('authors', [])}")
                 continue
 
             # Check date range
@@ -175,10 +178,10 @@ class ElasticsearchSearchService:
                 pub_date = hit.get('publish_date')
                 if pub_date:
                     if date_from and pub_date < date_from:
-                        logger.debug(f"Filtered out {hit.get('paper_id', 'unknown')} - date too old")
+                        log.debug(f"Filtered out {hit.get('paper_id', 'unknown')} - date too old")
                         continue
                     if date_to and pub_date > date_to:
-                        logger.debug(f"Filtered out {hit.get('paper_id', 'unknown')} - date too recent")
+                        log.debug(f"Filtered out {hit.get('paper_id', 'unknown')} - date too recent")
                         continue
 
             # Create result - ensure paper_id is a string
@@ -187,15 +190,15 @@ class ElasticsearchSearchService:
 
             # Log what we got for debugging
             if i < 5:
-                logger.info(f"Processing result {i}: paper_id='{paper_id}' (type: {type(hit.get('paper_id'))}), title='{title[:50] if title else 'None'}'")
+                log.info(f"Processing result {i}: paper_id='{paper_id}' (type: {type(hit.get('paper_id'))}), title='{title[:50] if title else 'None'}'")
 
             # Skip results without paper_id or title
             if not paper_id or paper_id == '':
-                logger.info(f"Skipping result {i} - missing paper_id. Raw value: {hit.get('paper_id')}, Keys available: {list(hit.keys())[:10]}")
+                log.info(f"Skipping result {i} - missing paper_id. Raw value: {hit.get('paper_id')}, Keys available: {list(hit.keys())[:10]}")
                 continue
 
             if not title or title == 'Untitled':
-                logger.info(f"Skipping result {i} - missing title for paper_id {paper_id}")
+                log.info(f"Skipping result {i} - missing title for paper_id {paper_id}")
                 continue
 
             result = SearchResult(
@@ -214,7 +217,7 @@ class ElasticsearchSearchService:
             results.append(result)
 
             if i < 3:
-                logger.debug(f"Added result {i}: {result.paper_id} - {result.title[:50]}")
+                log.debug(f"Added result {i}: {result.paper_id} - {result.title[:50]}")
 
             if len(results) >= max_results:
                 break
@@ -222,7 +225,7 @@ class ElasticsearchSearchService:
         # Normalize scores to 0-1 range
         results = self._normalize_scores(results, search_mode)
 
-        logger.info(f"Found {len(results)} results")
+        log.info(f"Found {len(results)} results")
         return results
 
     def get_paper_details(self, paper_id: str) -> Optional[PaperDetails]:
@@ -235,7 +238,7 @@ class ElasticsearchSearchService:
         Returns:
             PaperDetails if found, otherwise None.
         """
-        logger.info(f"Getting details for paper: {paper_id}")
+        log.info(f"Getting details for paper: {paper_id}")
 
         # Search for all chunks of this paper
         try:
@@ -259,8 +262,35 @@ class ElasticsearchSearchService:
             chunks = response['hits']['hits']
 
             if not chunks:
-                logger.warning(f"Paper not found: {paper_id}")
+                log.warning(f"Paper not found: {paper_id}")
                 return None
+
+            # Also fetch the single paper document for authoritative metadata
+            paper_search_body = {
+                "query": {
+                    "bool": {
+                        "filter": [
+                            {"term": {"paper_id": paper_id}},
+                            {"term": {"doc_type": "paper"}}
+                        ]
+                    }
+                },
+                "size": 1,
+                "_source": {"excludes": ["*_embedding"]}
+            }
+
+            paper_doc_response = self.indexer.es.search(
+                index=self.indexer.index_name,
+                body=paper_search_body
+            )
+
+            paper_doc_source = None
+            if paper_doc_response.get('hits', {}).get('hits'):
+                paper_doc_source = paper_doc_response['hits']['hits'][0].get('_source', {})
+                log.debug(
+                    f"Found paper document for {paper_id} with fields: "
+                    f"authors={bool(paper_doc_source.get('authors'))}, abstract={bool(paper_doc_source.get('abstract'))}"
+                )
 
             # Get paper metadata from first chunk
             first_chunk = chunks[0]['_source']
@@ -274,8 +304,9 @@ class ElasticsearchSearchService:
             return PaperDetails(
                 paper_id=first_chunk.get('paper_id', ''),
                 title=first_chunk.get('title', 'Untitled'),
-                authors=first_chunk.get('authors', []),
-                abstract=first_chunk.get('abstract', ''),
+                # Prefer authors/abstract from the paper document if available
+                authors=(paper_doc_source.get('authors') if paper_doc_source and paper_doc_source.get('authors') is not None else first_chunk.get('authors', [])),
+                abstract=(paper_doc_source.get('abstract') if paper_doc_source and paper_doc_source.get('abstract') is not None else first_chunk.get('abstract', '')),
                 content=content.strip(),
                 categories=first_chunk.get('categories', []),
                 publish_date=first_chunk.get('publish_date'),
@@ -292,8 +323,85 @@ class ElasticsearchSearchService:
             )
 
         except Exception as e:
-            logger.error(f"Error getting paper details: {e}")
+            log.error(f"Error getting paper details: {e}")
             return None
+
+    def get_chunks_for_papers(
+        self,
+        paper_ids: List[str],
+        query: Optional[str] = None,
+        max_chunks_per_paper: int = 5
+    ) -> Dict[str, List[Dict]]:
+        """
+        Retrieve chunks for specific papers, optionally ranked by relevance to a query.
+
+        Args:
+            paper_ids: List of paper IDs to get chunks for
+            query: Optional query to rank chunks by relevance
+            max_chunks_per_paper: Maximum chunks to return per paper
+
+        Returns:
+            Dictionary mapping paper_id to list of chunk documents
+        """
+        log.info(f"Getting chunks for {len(paper_ids)} papers")
+
+        result = {}
+
+        for paper_id in paper_ids:
+            try:
+                # Build query for this paper's chunks
+                must_clauses = [
+                    {"term": {"paper_id": paper_id}},
+                    {"term": {"doc_type": "chunk"}}
+                ]
+
+                # If query provided, add relevance scoring
+                if query:
+                    search_body = {
+                        "query": {
+                            "bool": {
+                                "must": must_clauses,
+                                "should": [
+                                    {
+                                        "match": {
+                                            "chunk_text": {
+                                                "query": query,
+                                                "boost": 1.0
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                        },
+                        "sort": [{"_score": {"order": "desc"}}],
+                        "size": max_chunks_per_paper
+                    }
+                else:
+                    # No query, just get chunks in order
+                    search_body = {
+                        "query": {"bool": {"must": must_clauses}},
+                        "sort": [{"chunk_index": {"order": "asc"}}],
+                        "size": max_chunks_per_paper
+                    }
+
+                response = self.indexer.es.search(
+                    index=self.indexer.index_name,
+                    body=search_body
+                )
+
+                chunks = []
+                for hit in response['hits']['hits']:
+                    chunk = hit['_source']
+                    chunk['_score'] = hit.get('_score', 0)
+                    chunks.append(chunk)
+
+                result[paper_id] = chunks
+
+            except Exception as e:
+                log.error(f"Error getting chunks for paper {paper_id}: {e}")
+                result[paper_id] = []
+
+        return result
 
     def find_similar_papers(
         self,
@@ -310,12 +418,12 @@ class ElasticsearchSearchService:
         Returns:
             List of SearchResult excluding the reference paper.
         """
-        logger.info(f"Finding papers similar to: {paper_id}")
+        log.info(f"Finding papers similar to: {paper_id}")
 
         # Get the reference paper details
         paper = self.get_paper_details(paper_id)
         if not paper:
-            logger.warning(f"Reference paper not found: {paper_id}")
+            log.warning(f"Reference paper not found: {paper_id}")
             return []
 
         # Use title + abstract as query for similarity
@@ -364,48 +472,54 @@ class ElasticsearchSearchService:
         Returns:
             Dictionary with counts and derived metrics.
         """
-        stats = self.indexer.get_index_stats()
+        base_stats = self.indexer.get_index_stats()
 
-        # Get additional stats for chunk-based index
+        # Compute paper and chunk specific stats using current doc_type structure
         try:
-            # Count unique papers and total chunks
-            search_body = {
+            # Chunk stats: total chunks and unique paper count derived from chunks
+            chunk_stats_body = {
                 "query": {"term": {"doc_type": "chunk"}},
                 "size": 0,
                 "aggs": {
-                    "unique_papers": {
-                        "cardinality": {
-                            "field": "paper_id"
-                        }
-                    },
-                    "categories": {
-                        "terms": {
-                            "field": "categories",
-                            "size": 50
-                        }
-                    }
+                    "unique_papers": {"cardinality": {"field": "paper_id"}}
                 }
             }
+            chunk_resp = self.indexer.es.search(index=self.indexer.index_name, body=chunk_stats_body)
+            total_chunks = chunk_resp.get("hits", {}).get("total", {}).get("value", 0)
+            unique_papers_from_chunks = chunk_resp.get("aggregations", {}).get("unique_papers", {}).get("value", 0)
 
-            response = self.indexer.es.search(index=self.indexer.index_name, body=search_body)
+            # Paper stats: total papers and category distribution should be based on paper docs
+            paper_stats_body = {
+                "query": {"term": {"doc_type": "paper"}},
+                "size": 0,
+                "aggs": {
+                    "categories": {"terms": {"field": "categories", "size": 100}}
+                }
+            }
+            paper_resp = self.indexer.es.search(index=self.indexer.index_name, body=paper_stats_body)
+            total_papers = paper_resp.get("hits", {}).get("total", {}).get("value", 0)
+            category_buckets = paper_resp.get("aggregations", {}).get("categories", {}).get("buckets", [])
+            category_counts = {bucket["key"]: bucket["doc_count"] for bucket in category_buckets}
 
-            # Extract aggregation results
-            unique_papers = response['aggregations']['unique_papers']['value']
-            category_buckets = response['aggregations']['categories']['buckets']
+            # Prefer explicit total_papers from paper docs; fallback to unique papers from chunks
+            if not total_papers and unique_papers_from_chunks:
+                total_papers = unique_papers_from_chunks
 
-            category_counts = {bucket['key']: bucket['doc_count'] for bucket in category_buckets}
+            result = {
+                **base_stats,
+                "total_papers": total_papers,
+                "total_chunks": total_chunks,
+                "category_distribution": category_counts,
+            }
 
-            stats['total_papers'] = unique_papers
-            stats['total_chunks'] = stats.get('document_count', 0)
-            stats['category_distribution'] = category_counts
+            if total_papers > 0:
+                result["avg_chunks_per_paper"] = round(total_chunks / total_papers, 2)
 
-            if unique_papers > 0:
-                stats['avg_chunks_per_paper'] = round(stats['total_chunks'] / unique_papers, 2)
+            return result
 
         except Exception as e:
-            logger.error(f"Error getting additional stats: {e}")
-
-        return stats
+            log.error(f"Error getting additional stats: {e}")
+            return base_stats
 
     def _normalize_scores(self, results: List[SearchResult], search_mode: str) -> List[SearchResult]:
         """

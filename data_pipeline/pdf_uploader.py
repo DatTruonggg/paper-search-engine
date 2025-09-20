@@ -7,7 +7,7 @@ and updates Elasticsearch with MinIO URLs.
 import os
 import sys
 import argparse
-import logging
+from logs import log
 from pathlib import Path
 from typing import Dict, List, Optional
 from tqdm import tqdm
@@ -18,9 +18,6 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from data_pipeline.minio_storage import MinIOStorage
 from data_pipeline.es_indexer import ESIndexer
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
 class PDFUploader:
@@ -50,15 +47,15 @@ class PDFUploader:
         # Initialize ES indexer for updates
         self.es_indexer = ESIndexer(es_host=es_host, index_name=es_index)
 
-        logger.info(f"PDF Uploader initialized")
-        logger.info(f"PDF directory: {self.pdf_dir}")
-        logger.info(f"MinIO endpoint: {minio_endpoint}")
-        logger.info(f"ES host: {es_host}")
+        log.info(f"PDF Uploader initialized")
+        log.info(f"PDF directory: {self.pdf_dir}")
+        log.info(f"MinIO endpoint: {minio_endpoint}")
+        log.info(f"ES host: {es_host}")
 
     def find_pdf_files(self) -> List[Path]:
         """Find all PDF files in the PDF directory."""
         pdf_files = list(self.pdf_dir.glob("*.pdf"))
-        logger.info(f"Found {len(pdf_files)} PDF files")
+        log.info(f"Found {len(pdf_files)} PDF files")
         return pdf_files
 
     def get_paper_id_from_pdf_path(self, pdf_path: Path) -> str:
@@ -82,13 +79,13 @@ class PDFUploader:
             minio_pdf_url = self.minio_storage.upload_pdf(paper_id, pdf_path)
 
             if not minio_pdf_url:
-                logger.error(f"Failed to upload PDF to MinIO: {paper_id}")
+                log.error(f"Failed to upload PDF to MinIO: {paper_id}")
                 return False
 
             # Check if document exists in ES
             document = self.es_indexer.get_document(paper_id)
             if not document:
-                logger.warning(f"Document not found in ES, skipping URL update: {paper_id}")
+                log.warning(f"Document not found in ES, skipping URL update: {paper_id}")
                 return False
 
             # Update document with MinIO URL
@@ -105,11 +102,11 @@ class PDFUploader:
                 body=update_body
             )
 
-            logger.info(f"Updated ES document with MinIO URL: {paper_id}")
+            log.info(f"Updated ES document with MinIO URL: {paper_id}")
             return True
 
         except Exception as e:
-            logger.error(f"Error processing {paper_id}: {e}")
+            log.error(f"Error processing {paper_id}: {e}")
             return False
 
     def upload_all_pdfs(self, max_files: Optional[int] = None) -> Dict[str, int]:
@@ -135,14 +132,14 @@ class PDFUploader:
             "skipped": 0
         }
 
-        logger.info(f"Starting upload of {len(pdf_files)} PDF files...")
+        log.info(f"Starting upload of {len(pdf_files)} PDF files...")
 
         for pdf_path in tqdm(pdf_files, desc="Uploading PDFs"):
             paper_id = self.get_paper_id_from_pdf_path(pdf_path)
 
             # Check if already uploaded
             if self._is_already_uploaded(paper_id):
-                logger.debug(f"PDF already uploaded, skipping: {paper_id}")
+                log.debug(f"PDF already uploaded, skipping: {paper_id}")
                 stats["skipped"] += 1
                 continue
 
@@ -154,7 +151,7 @@ class PDFUploader:
             else:
                 stats["failed"] += 1
 
-        logger.info(f"PDF upload completed: {stats}")
+        log.info(f"PDF upload completed: {stats}")
         return stats
 
     def _is_already_uploaded(self, paper_id: str) -> bool:
@@ -205,7 +202,7 @@ class PDFUploader:
             }
 
         except Exception as e:
-            logger.error(f"Error getting upload stats: {e}")
+            log.error(f"Error getting upload stats: {e}")
             return {"error": str(e)}
 
 
@@ -257,17 +254,17 @@ def main():
     if args.stats_only:
         # Show statistics only
         stats = uploader.get_upload_stats()
-        print("\n=== PDF Upload Statistics ===")
-        print(json.dumps(stats, indent=2))
+        log.info("\n=== PDF Upload Statistics ===")
+        log.info(json.dumps(stats, indent=2))
     else:
         # Upload PDFs
         stats = uploader.upload_all_pdfs(max_files=args.max_files)
-        print(f"\n=== Upload Results ===")
-        print(f"Total PDFs found: {stats['total_found']}")
-        print(f"Successfully uploaded: {stats['uploaded']}")
-        print(f"ES documents updated: {stats['updated']}")
-        print(f"Failed: {stats['failed']}")
-        print(f"Skipped (already uploaded): {stats['skipped']}")
+        log.info(f"\n=== Upload Results ===")
+        log.info(f"Total PDFs found: {stats['total_found']}")
+        log.info(f"Successfully uploaded: {stats['uploaded']}")
+        log.info(f"ES documents updated: {stats['updated']}")
+        log.info(f"Failed: {stats['failed']}")
+        log.info(f"Skipped (already uploaded): {stats['skipped']}")
 
 
 if __name__ == "__main__":
