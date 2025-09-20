@@ -64,6 +64,9 @@ logs/
 *.json
 data/
 
+# Allow package manifests even though *.json is ignored above
+!**/package.json
+
 # Temporary files
 temp/
 tmp/
