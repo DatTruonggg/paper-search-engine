@@ -61,12 +61,12 @@ logs/
 
 # Data files
 *.csv
-*.json
 data/
 
 # Allow package manifests even though *.json is ignored above
 !**/package.json
-
+!**/tsconfig.json
+!**/components.json
 # Temporary files
 temp/
 tmp/
