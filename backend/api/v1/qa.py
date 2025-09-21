@@ -34,7 +34,12 @@ class SinglePaperQARequest(BaseModel):
 
 class MultiPaperQARequest(BaseModel):
     """Request model for multi-paper QA"""
-    paper_ids: List[str] = Field(..., description="List of paper IDs to search across", min_items=1, max_items=10)
+    paper_ids: List[str] = Field(
+        ..., 
+        description="List of paper IDs to search across", 
+        min_items=1, 
+        max_items=100
+    )
     question: str = Field(..., description="Question to answer", min_length=1, max_length=1000)
     max_chunks_per_paper: int = Field(default=3, ge=1, le=10, description="Maximum chunks per paper")
 

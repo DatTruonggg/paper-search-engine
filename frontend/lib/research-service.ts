@@ -44,6 +44,25 @@ export interface BackendAgentResponse {
   error?: string
 }
 
+// Batch papers metadata (lightweight) response
+export interface BackendPapersBatchResponse {
+  total: number
+  found: number
+  missing: string[]
+  papers: Array<{
+    paper_id: string
+    title?: string
+    authors?: string[]
+    abstract?: string
+    categories?: string[]
+    publish_date?: string
+    chunk_count?: number
+    has_images?: boolean
+    minio_pdf_url?: string
+    minio_markdown_url?: string
+  }>
+}
+
 // Frontend response model (what the UI expects)
 export interface SearchResponse {
   contextId: string
@@ -51,6 +70,27 @@ export interface SearchResponse {
   total: number
   page: number
   pageSize: number
+}
+
+// --- QA Response Models ---
+export interface BackendQAResponse {
+  answer: string
+  sources: Array<Record<string, any>>
+  confidence_score: number
+  processing_time: number
+  context_chunks_count: number
+  papers_involved: string[]
+}
+
+export interface QASource extends Record<string, any> {}
+
+export interface QAResponse {
+  answer: string
+  sources: QASource[]
+  confidenceScore: number
+  processingTime: number
+  contextChunksCount: number
+  papersInvolved: string[]
 }
 
 // Note: QA, Summary, and other interfaces removed as they're not implemented in backend
@@ -76,6 +116,21 @@ export class ResearchService {
       journalRank: "",
       // Pass through evidence from agent responses if present
       evidenceSentences: backendPaper.evidence_sentences || backendPaper.evidenceSentences || []
+    }
+  }
+
+  /**
+   * Map Backend QAResponse (snake_case) -> Frontend QAResponse (camelCase).
+   * Chỉ chuyển đổi tên trường; giữ nguyên cấu trúc mảng sources từ backend.
+   */
+  private transformQAResponse(backend: BackendQAResponse): QAResponse {
+    return {
+      answer: backend.answer,
+      sources: backend.sources || [],
+      confidenceScore: backend.confidence_score ?? 0,
+      processingTime: backend.processing_time ?? 0,
+      contextChunksCount: backend.context_chunks_count ?? 0,
+      papersInvolved: backend.papers_involved || [],
     }
   }
 
@@ -209,4 +264,93 @@ export class ResearchService {
 
   // Note: QA, Summary, and Documents endpoints are not implemented in the current backend
   // These would need to be implemented in the backend first before adding them here
+
+  // --- QA (stubs) ---
+  /**
+   * Hỏi đáp theo danh sách paper đã chọn.
+   * - 1 paper: gọi /api/v1/qa/single-paper { paper_id, question }
+   * - >1 papers: gọi /api/v1/qa/multi-paper { paper_ids, question }
+   */
+  async qaSelected(params: { question: string; paperIds: string[]; citationStyle?: string; retrieval?: string; conversationId?: string }): Promise<QAResponse> {
+    const ids = (params.paperIds || []).map((s) => s.trim()).filter(Boolean)
+    if (!params.question || ids.length === 0) {
+      throw new Error('Missing question or paperIds')
+    }
+
+    if (ids.length === 1) {
+      const payload = { paper_id: ids[0], question: params.question }
+      const resp = await apiFetch<BackendQAResponse>(`/api/v1/qa/single-paper`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        timeoutMs: 300000,
+      })
+      return this.transformQAResponse(resp)
+    }
+
+    const payload = { paper_ids: ids, question: params.question }
+    const resp = await apiFetch<BackendQAResponse>(`/api/v1/qa/multi-paper`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      timeoutMs: 300000,
+    })
+    return this.transformQAResponse(resp)
+  }
+
+  /**
+   * Hỏi đáp theo tập nhiều paper. Khuyến nghị truyền trực tiếp danh sách paperIds.
+   * Lưu ý: Tham số searchContextId không được backend sử dụng cho QA hiện tại.
+   */
+  async qaAll(_params: { question: string; searchContextId: string; paperIds?: string[]; citationStyle?: string; retrieval?: string; conversationId?: string }): Promise<QAResponse> {
+    const ids = (_params.paperIds || []).map((s) => s.trim()).filter(Boolean)
+    if (!ids.length) {
+      throw new Error('qaAll requires paperIds; use qaSelected or provide paperIds')
+    }
+    // Delegate sang multi-paper
+    const payload = { paper_ids: ids, question: _params.question }
+    const resp = await apiFetch<BackendQAResponse>(`/api/v1/qa/multi-paper`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      timeoutMs: 300000,
+    })
+    return this.transformQAResponse(resp)
+  }
+
+  /**
+   * Fetch lightweight metadata for a batch of paper IDs.
+   * Used when user selects papers (tick) in QA / Summary modes so we can build
+   * a reliable context without requiring manual paper_id input.
+   */
+  async fetchPapersBatch(paperIds: string[]): Promise<{ papers: PaperResult[]; missing: string[] }> {
+    if (!paperIds || paperIds.length === 0) {
+      return { papers: [], missing: [] }
+    }
+
+    const unique = Array.from(new Set(paperIds.map((p) => p.trim()).filter(Boolean)))
+    // Backend limit per request is 50 (enforced in model) – enforce here defensively
+    const MAX_BATCH = 50
+    const chunks: string[][] = []
+    for (let i = 0; i < unique.length; i += MAX_BATCH) {
+      chunks.push(unique.slice(i, i + MAX_BATCH))
+    }
+
+    const aggregate: PaperResult[] = []
+    const missingAll: string[] = []
+
+    for (const chunk of chunks) {
+      try {
+        const resp = await apiFetch<BackendPapersBatchResponse>(`/api/v1/papers/batch`, {
+          method: 'POST',
+          body: JSON.stringify({ paper_ids: chunk })
+        })
+        if (resp?.papers?.length) {
+          aggregate.push(...resp.papers.map(p => this.transformPaper(p)))
+        }
+        if (resp?.missing?.length) missingAll.push(...resp.missing)
+      } catch (e) {
+        console.error('[fetchPapersBatch] error chunk', e)
+      }
+    }
+
+    return { papers: aggregate, missing: missingAll }
+  }
 }

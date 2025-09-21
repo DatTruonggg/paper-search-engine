@@ -23,7 +23,7 @@ class QAResponse:
     sources: List[Dict[str, Any]]
     confidence_score: float
     processing_time: float
-
+    
 
 class QAAgent:
     """
@@ -111,8 +111,8 @@ class QAAgent:
             # Analyze images if enabled
             image_descriptions = {}
             if qa_config.include_images:
-                async with self.image_tool:
-                    image_descriptions = await self.image_tool.analyze_images_in_chunks(context_chunks)
+                image_descriptions = await self.image_tool.analyze_images_in_chunks(context_chunks)
+
             
             # Build context for prompt
             prompt_data = self.context_builder.format_context_for_prompt(
@@ -120,7 +120,6 @@ class QAAgent:
                 image_descriptions=image_descriptions,
                 papers_minio_urls={paper_id: minio_urls} if minio_urls else None
             )
-
             # Fallback prompts if env not set
             single_prompt_template = SINGLE_PAPER_QA_PROMPT
             # Safe formatting: handle historical newline-in-placeholder bug {paper_title\n}
@@ -229,8 +228,8 @@ class QAAgent:
             # Analyze images if enabled
             image_descriptions = {}
             if qa_config.include_images:
-                async with self.image_tool:
-                    image_descriptions = await self.image_tool.analyze_images_in_chunks(context_chunks)
+                image_descriptions = await self.image_tool.analyze_images_in_chunks(context_chunks)
+
             
             # Build context for prompt
             prompt_data = self.context_builder.format_context_for_prompt(
@@ -239,7 +238,20 @@ class QAAgent:
                 papers_minio_urls=papers_minio_urls if papers_minio_urls else None
             )
             multi_prompt_template = MULTI_PAPER_QA_PROMPT
-            prompt = multi_prompt_template.format(**prompt_data)
+            # Safe formatting: handle possible newline-in-placeholder bug or missing keys
+            try:
+                prompt = multi_prompt_template.format(**prompt_data)
+            except KeyError as ke:
+                missing_key = str(ke).strip("'\"")
+                if missing_key.endswith("\n"):
+                    fixed_template = multi_prompt_template.replace("{" + missing_key + "}", "{" + missing_key.rstrip() + "}")
+                    try:
+                        prompt = fixed_template.format(**prompt_data)
+                        log.warning("Auto-corrected prompt placeholder containing newline: %s", missing_key)
+                    except Exception:
+                        raise
+                else:
+                    raise
             
             # Generate answer using LLM
             response = await self.llm.acomplete(prompt)
@@ -256,7 +268,7 @@ class QAAgent:
                     "page_number": chunk.page_number,
                     "relevance_score": chunk.relevance_score
                 })
-            
+                log.debug(f"paper_title: {chunk.paper_title}")
             # Calculate confidence score based on relevance scores
             confidence_score = sum(chunk.relevance_score for chunk in context_chunks) / len(context_chunks)
             
@@ -334,8 +346,8 @@ class QAAgent:
             # Analyze images if enabled
             image_descriptions = {}
             if qa_config.include_images:
-                async with self.image_tool:
-                    image_descriptions = await self.image_tool.analyze_images_in_chunks(context_chunks)
+                image_descriptions = await self.image_tool.analyze_images_in_chunks(context_chunks)
+
             
             # Build context for prompt
             prompt_data = self.context_builder.format_context_for_prompt(
@@ -459,8 +471,8 @@ class QAAgent:
 
             image_descriptions = {}
             if qa_config.include_images:
-                async with self.image_tool:
-                    image_descriptions = await self.image_tool.analyze_images_in_chunks(combined_chunks)
+                image_descriptions = await self.image_tool.analyze_images_in_chunks(context_chunks)
+
 
             prompt_data = self.context_builder.format_context_for_prompt(
                 combined_chunks, question, is_multi_paper=True,

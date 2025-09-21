@@ -568,10 +568,14 @@ class ContextBuilder:
                 papers_minio_urls
             )
             num_papers = len(set(chunk.paper_id for chunk in context_chunks))
+            # Provide a generic title placeholder to satisfy templates expecting {paper_title}
+            # This avoids KeyError when prompts include {paper_title} for multi-paper flows
+            paper_title_placeholder = f"{num_papers} papers" if num_papers != 1 else (context_chunks[0].paper_title if context_chunks else "Unknown Paper")
             return {
                 "context_chunks": context_text,
                 "question": question,
-                "num_papers": str(num_papers)
+                "num_papers": str(num_papers),
+                "paper_title": paper_title_placeholder
             }
         else:
             # For single paper, extract MinIO URLs for the first paper
