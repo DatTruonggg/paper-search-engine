@@ -396,6 +396,124 @@ class QAAgent:
                 confidence_score=0.0,
                 processing_time=time.time() - start_time
             )
+
+    async def answer_mixed_question(
+        self,
+        question: str,
+        paper_ids: Optional[List[str]] = None,
+        search_query: Optional[str] = None,
+        max_chunks_per_selected: int = 3,
+        max_search_papers: int = 5,
+        max_search_chunks_per_paper: int = 2,
+    ) -> QAResponse:
+        """Answer a question using a combination of explicitly selected paper IDs
+        and/or dynamic search results. This supports the bookmark + new search
+        use case on the frontend.
+
+        Args:
+            question: User question
+            paper_ids: Explicitly selected (bookmarked) paper IDs (may be empty)
+            search_query: Optional fresh search query to augment context
+            max_chunks_per_selected: Chunks per selected paper
+            max_search_papers: Number of papers from search
+            max_search_chunks_per_paper: Chunks per search paper
+        """
+        import time
+        start_time = time.time()
+        try:
+            if not paper_ids and not search_query:
+                raise ValueError("At least one of paper_ids or search_query must be provided")
+
+            combined_chunks: List[ContextChunk] = []
+
+            if paper_ids:
+                sel_chunks = await self.retrieval_tool.retrieve_multi_paper_context(
+                    paper_ids, question, max_chunks_per_selected
+                )
+                combined_chunks.extend(sel_chunks)
+
+            if search_query:
+                search_chunks = await self.retrieval_tool.retrieve_search_results_context(
+                    search_query, question, max_papers=max_search_papers,
+                    max_chunks_per_paper=max_search_chunks_per_paper
+                )
+                # Avoid duplicate (paper_id, chunk_index, text hash) combos
+                seen = { (c.paper_id, c.chunk_index, hash(c.chunk_text)) for c in combined_chunks }
+                for c in search_chunks:
+                    sig = (c.paper_id, c.chunk_index, hash(c.chunk_text))
+                    if sig not in seen:
+                        combined_chunks.append(c)
+                        seen.add(sig)
+
+            if not combined_chunks:
+                return QAResponse(
+                    answer="I couldn't gather enough relevant context from the provided inputs.",
+                    context_chunks=[],
+                    image_descriptions={},
+                    sources=[],
+                    confidence_score=0.0,
+                    processing_time=time.time() - start_time
+                )
+
+            # Gather MinIO URLs for all involved papers
+            papers_minio_urls = {}
+            unique_papers = list({c.paper_id for c in combined_chunks})
+            for pid in unique_papers:
+                try:
+                    urls = await self.retrieval_tool.get_paper_minio_urls(pid)
+                    if urls:
+                        papers_minio_urls[pid] = urls
+                except Exception:
+                    continue
+
+            image_descriptions = {}
+            if qa_config.include_images:
+                async with self.image_tool:
+                    image_descriptions = await self.image_tool.analyze_images_in_chunks(combined_chunks)
+
+            prompt_data = self.context_builder.format_context_for_prompt(
+                combined_chunks, question, is_multi_paper=True,
+                image_descriptions=image_descriptions,
+                papers_minio_urls=papers_minio_urls or None
+            )
+            prompt = qa_config.multi_paper_prompt.format(**prompt_data)
+            if qa_config.verbose:
+                log.info(f"Generated prompt for mixed QA: {prompt[:200]}...")
+            response = await self.llm.acomplete(prompt)
+            answer = str(response)
+
+            sources = []
+            for chunk in combined_chunks:
+                sources.append({
+                    "paper_id": chunk.paper_id,
+                    "paper_title": chunk.paper_title,
+                    "chunk_index": chunk.chunk_index,
+                    "section_path": chunk.section_path,
+                    "page_number": chunk.page_number,
+                    "relevance_score": chunk.relevance_score
+                })
+
+            confidence_score = sum(c.relevance_score for c in combined_chunks) / len(combined_chunks)
+            processing_time = time.time() - start_time
+            log.info(f"Mixed QA completed in {processing_time:.2f}s using {len(combined_chunks)} chunks")
+            return QAResponse(
+                answer=answer,
+                context_chunks=combined_chunks,
+                image_descriptions=image_descriptions,
+                sources=sources,
+                confidence_score=confidence_score,
+                processing_time=processing_time
+            )
+        except Exception as e:
+            log.error(f"Error in mixed QA: {e}")
+            return QAResponse(
+                answer=f"Error processing your question: {str(e)}",
+                context_chunks=[],
+                image_descriptions={},
+                sources=[],
+                confidence_score=0.0,
+                processing_time=time.time() - start_time
+            )
     
     async def health_check(self) -> Dict[str, Any]:
         """

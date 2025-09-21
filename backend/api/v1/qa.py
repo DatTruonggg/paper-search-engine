@@ -42,6 +42,20 @@ class SearchResultsQARequest(BaseModel):
     max_chunks_per_paper: int = Field(default=2, ge=1, le=5, description="Maximum chunks per paper")
 
 
+class MixedQARequest(BaseModel):
+    """Request model combining selected paper IDs and/or a search query."""
+    question: str = Field(..., min_length=1, max_length=1000)
+    paper_ids: List[str] | None = Field(default=None, description="Explicit selected (bookmarked) paper IDs")
+    search_query: str | None = Field(default=None, description="Optional fresh search query to augment context")
+    max_chunks_per_selected: int = Field(default=3, ge=1, le=10)
+    max_search_papers: int = Field(default=5, ge=1, le=15)
+    max_search_chunks_per_paper: int = Field(default=2, ge=1, le=5)
+
+    def model_post_init(self, *args, **kwargs):  # type: ignore[override]
+        if (not self.paper_ids or len(self.paper_ids) == 0) and not self.search_query:
+            raise ValueError("Provide at least paper_ids or search_query")
+
+
 class QAResponse(BaseModel):
     """Response model for QA requests"""
     answer: str = Field(description="Generated answer")
@@ -50,7 +64,6 @@ class QAResponse(BaseModel):
     processing_time: float = Field(description="Processing time in seconds")
     context_chunks_count: int = Field(description="Number of context chunks used")
     papers_involved: List[str] = Field(description="List of paper IDs involved in the answer")
-
 
 class QAHealthResponse(BaseModel):
     """Health check response for QA services"""
@@ -216,6 +229,40 @@ async def search_results_qa(request: SearchResultsQARequest):
 
     except Exception as e:
         log.exception("Search results QA failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/mixed", response_model=QAResponse)
+async def mixed_qa(request: MixedQARequest):
+    """Answer a question using any combination of selected paper IDs and / or a new search query.
+
+    This supports the UI workflow: user bookmarks some papers (paper_ids), then submits
+    a new question possibly with a fresh search query producing additional dynamic context.
+    At least one of paper_ids or search_query must be provided.
+    """
+    if (not request.paper_ids or len(request.paper_ids) == 0) and not request.search_query:
+        raise HTTPException(status_code=422, detail="Provide at least paper_ids or search_query")
+    try:
+        agent = get_qa_agent()
+        response = await agent.answer_mixed_question(
+            question=request.question,
+            paper_ids=request.paper_ids,
+            search_query=request.search_query,
+            max_chunks_per_selected=request.max_chunks_per_selected,
+            max_search_papers=request.max_search_papers,
+            max_search_chunks_per_paper=request.max_search_chunks_per_paper,
+        )
+        involved = list(set(chunk.paper_id for chunk in response.context_chunks))
+        return QAResponse(
+            answer=response.answer,
+            sources=response.sources,
+            confidence_score=response.confidence_score,
+            processing_time=response.processing_time,
+            context_chunks_count=len(response.context_chunks),
+            papers_involved=involved
+        )
+    except Exception as e:
+        log.exception("Mixed QA failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 

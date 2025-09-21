@@ -53,7 +53,7 @@ class Config:
     DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
 
     # Elasticsearch Configuration
-    ES_HOST = os.getenv("ES_HOST", "http://localhost:9200")
+    ES_HOST = os.getenv("ES_HOST", "http://103.3.247.120:9200")
     ES_INDEX_NAME = os.getenv("ES_INDEX_NAME", "papers")
 
     # BGE Embedding Configuration
