@@ -128,7 +128,38 @@ class IngestionService:
             
             # Step 3: Upload images to MinIO and process markdown
             log.info("Step 3: Processing images and uploading to MinIO...")
-            await self._process_images_and_upload_to_minio(markdown_dir)
+            image_urls_by_paper = await self._process_images_and_upload_to_minio(markdown_dir)
+
+            # Step 3b: Create complete bucket structure and collect URLs per paper
+            storage_papers: List[Dict[str, Any]] = []
+            markdown_files = list(markdown_dir.glob("*.md"))
+            for md_file in markdown_files:
+                try:
+                    paper_id = md_file.stem
+                    pdf_path = pdf_dir / f"{paper_id}.pdf"
+                    markdown_content = md_file.read_text(encoding='utf-8')
+                    # Load metadata if available
+                    metadata: Dict[str, Any] = {}
+                    json_path = pdf_dir / f"{paper_id}.json"
+                    if json_path.exists():
+                        try:
+                            metadata = json.loads(json_path.read_text(encoding='utf-8'))
+                        except Exception:
+                            metadata = {}
+
+                    urls = await self._create_paper_bucket_structure(
+                        paper_id=paper_id,
+                        pdf_path=pdf_path,
+                        metadata=metadata,
+                        markdown_content=markdown_content,
+                        image_urls=image_urls_by_paper.get(paper_id, [])
+                    )
+                    storage_papers.append({
+                        "paper_id": paper_id,
+                        "urls": urls
+                    })
+                except Exception as e:
+                    log.warning(f"Failed to create bucket structure for {md_file}: {e}")
             
             # Step 4: Ingest into Elasticsearch
             log.info("Step 4: Ingesting papers into Elasticsearch...")
@@ -173,6 +204,10 @@ class IngestionService:
                         "index_size_mb": es_stats.get('index_size_mb', 0)
                     }
                 },
+                "storage": {
+                    "papers": storage_papers,
+                    "total_papers_with_assets": len(storage_papers)
+                },
                 "processing_time": datetime.now().isoformat()
             }
             
@@ -184,7 +219,7 @@ class IngestionService:
                 "processing_time": datetime.now().isoformat()
             }
     
-    async def _process_images_and_upload_to_minio(self, markdown_dir: Path):
+    async def _process_images_and_upload_to_minio(self, markdown_dir: Path) -> Dict[str, List[str]]:
         """
         Process images in markdown files and upload to MinIO following bucket structure.
         
@@ -195,8 +230,7 @@ class IngestionService:
             markdown_dir: Directory containing markdown files
         """
         try:
-            
-            
+            image_urls_by_paper: Dict[str, List[str]] = {}
             minio_storage = MinIOStorage(endpoint=config.MINIO_ENDPOINT)
             
             markdown_files = list(markdown_dir.glob("*.md"))
@@ -206,6 +240,7 @@ class IngestionService:
                 try:
                     paper_id = md_file.stem
                     content = md_file.read_text(encoding='utf-8')
+                    image_urls_by_paper.setdefault(paper_id, [])
                     
                     # Pattern to match base64 images
                     base64_pattern = r'!\[([^\]]*)\]\(data:image/([^;]+);base64,([^)]+)\)'
@@ -246,6 +281,8 @@ class IngestionService:
                             # Clean up temp file
                             temp_image_path.unlink()
                             
+                            if minio_url:
+                                image_urls_by_paper[paper_id].append(minio_url)
                             # Return markdown image link
                             return f"![{alt_text}]({minio_url})"
                             
@@ -267,12 +304,13 @@ class IngestionService:
                     continue
             
             log.info(f"Processed images in {processed_count} markdown files")
+            return image_urls_by_paper
             
         except Exception as e:
             log.error(f"Error in image processing: {e}")
             raise
     
-    async def _create_paper_bucket_structure(self, paper_id: str, pdf_path: Path, metadata: Dict, markdown_content: str) -> Dict[str, str]:
+    async def _create_paper_bucket_structure(self, paper_id: str, pdf_path: Path, metadata: Dict, markdown_content: str, image_urls: Optional[List[str]] = None) -> Dict[str, str]:
         """
         Create complete MinIO bucket structure for a paper.
         
@@ -339,7 +377,10 @@ class IngestionService:
             urls["markdown"] = markdown_url
             temp_markdown_path.unlink()
             
-            # 4. Create manifest: papers/{paperId}/manifest.json
+            # 4. Attach images into urls
+            urls["images"] = image_urls or []
+
+            # 5. Create manifest: papers/{paperId}/manifest.json
             manifest = {
                 "paper_id": paper_id,
                 "created_at": datetime.now().isoformat(),

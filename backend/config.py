@@ -74,7 +74,7 @@ class Config:
     PDF_LOCAL_DIR = os.getenv("PDF_LOCAL_DIR", "/Users/admin/code/cazoodle/data/pdfs")
 
     # MinIO / Object Storage
-    MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
+    MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://103.3.247.120:9002")
 
     # LlamaIndex Agent Configuration
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")

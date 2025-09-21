@@ -31,7 +31,6 @@ class QAResponse:
 class QAAgent:
     """
     Intelligent QA Agent for answering questions about research papers.
-    
     This agent:
     1. Retrieves relevant context chunks from papers
     2. Analyzes images when available
