@@ -3,16 +3,13 @@ Main QA Agent for single-paper and multi-paper question answering.
 Following llama_agent design pattern.
 """
 
-import asyncio
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
-import json
+import time
 
 from llama_index.llms.gemini import Gemini
-from llama_index.llms.openai import OpenAI
-from llama_index.core.llms import ChatMessage
 
-from .config import qa_config
+from .config import qa_config, SINGLE_PAPER_QA_PROMPT, MULTI_PAPER_QA_PROMPT
 from .tools import QARetrievalTool, ImageAnalysisTool, ContextBuilder, ContextChunk
 
 from logs import log
@@ -51,25 +48,16 @@ class QAAgent:
             es_service: Optional ElasticsearchSearchService instance
             llm: Optional LLM instance
         """
-        # Initialize LLM
+        # Initialize LLM (Gemini only)
         if llm is None:
-            if qa_config.default_llm_provider == "openai" and qa_config.openai_api_key:
-                self.llm = OpenAI(
-                    model=qa_config.openai_model,
-                    api_key=qa_config.openai_api_key,
-                    temperature=qa_config.temperature,
-                    max_tokens=qa_config.max_tokens,
-                    timeout=qa_config.timeout_seconds
-                )
-            elif qa_config.google_api_key:
-                self.llm = Gemini(
-                    model=qa_config.google_model,
-                    api_key=qa_config.google_api_key,
-                    temperature=qa_config.temperature,
-                    timeout=qa_config.timeout_seconds
-                )
-            else:
-                raise ValueError("No valid LLM configuration found")
+            if not qa_config.google_api_key:
+                raise ValueError("GOOGLE_API_KEY is required for Gemini-only QAAgent")
+            self.llm = Gemini(
+                model=qa_config.google_model,
+                api_key=qa_config.google_api_key,
+                temperature=qa_config.temperature,
+                timeout=qa_config.timeout_seconds
+            )
         else:
             self.llm = llm
         
@@ -78,11 +66,11 @@ class QAAgent:
         self.image_tool = ImageAnalysisTool()
         self.context_builder = ContextBuilder()
         
-        log.info(f"QA Agent initialized with {qa_config.default_llm_provider} LLM")
+    log.info("QA Agent initialized with Gemini LLM")
     
     async def answer_single_paper_question(
-        self, 
-        paper_id: str, 
+        self,
+        paper_id: str,
         question: str,
         max_chunks: int = None
     ) -> QAResponse:
@@ -97,7 +85,6 @@ class QAAgent:
         Returns:
             QAResponse with answer and metadata
         """
-        import time
         start_time = time.time()
         
         try:
@@ -129,17 +116,30 @@ class QAAgent:
             
             # Build context for prompt
             prompt_data = self.context_builder.format_context_for_prompt(
-                context_chunks, question, is_multi_paper=False, 
+                context_chunks, question, is_multi_paper=False,
                 image_descriptions=image_descriptions,
                 papers_minio_urls={paper_id: minio_urls} if minio_urls else None
             )
+
+            # Fallback prompts if env not set
+            single_prompt_template = SINGLE_PAPER_QA_PROMPT
+            # Safe formatting: handle historical newline-in-placeholder bug {paper_title\n}
+            try:
+                prompt = single_prompt_template.format(**prompt_data)
+            except KeyError as ke:
+                missing_key = str(ke).strip("'\"")
+                # Attempt automatic fix for accidental newline in placeholder name
+                if missing_key.endswith("\n"):
+                    fixed_template = single_prompt_template.replace("{" + missing_key + "}", "{" + missing_key.rstrip() + "}")
+                    try:
+                        prompt = fixed_template.format(**prompt_data)
+                        log.warning("Auto-corrected prompt placeholder containing newline: %s", missing_key)
+                    except Exception:
+                        raise
+                else:
+                    raise
             
             # Generate answer using LLM
-            prompt = qa_config.single_paper_prompt.format(**prompt_data)
-            
-            if qa_config.verbose:
-                log.info(f"Generated prompt for single-paper QA: {prompt[:200]}...")
-            
             response = await self.llm.acomplete(prompt)
             answer = str(response)
             
@@ -183,8 +183,8 @@ class QAAgent:
             )
     
     async def answer_multi_paper_question(
-        self, 
-        paper_ids: List[str], 
+        self,
+        paper_ids: List[str],
         question: str,
         max_chunks_per_paper: int = 3
     ) -> QAResponse:
@@ -199,7 +199,6 @@ class QAAgent:
         Returns:
             QAResponse with answer and metadata
         """
-        import time
         start_time = time.time()
         
         try:
@@ -239,13 +238,10 @@ class QAAgent:
                 image_descriptions=image_descriptions,
                 papers_minio_urls=papers_minio_urls if papers_minio_urls else None
             )
+            multi_prompt_template = MULTI_PAPER_QA_PROMPT
+            prompt = multi_prompt_template.format(**prompt_data)
             
             # Generate answer using LLM
-            prompt = qa_config.multi_paper_prompt.format(**prompt_data)
-            
-            if qa_config.verbose:
-                log.info(f"Generated prompt for multi-paper QA: {prompt[:200]}...")
-            
             response = await self.llm.acomplete(prompt)
             answer = str(response)
             
@@ -289,8 +285,8 @@ class QAAgent:
             )
     
     async def answer_search_results_question(
-        self, 
-        search_query: str, 
+        self,
+        search_query: str,
         question: str,
         max_papers: int = 5,
         max_chunks_per_paper: int = 2
@@ -307,7 +303,6 @@ class QAAgent:
         Returns:
             QAResponse with answer and metadata
         """
-        import time
         start_time = time.time()
         
         try:
@@ -348,13 +343,10 @@ class QAAgent:
                 image_descriptions=image_descriptions,
                 papers_minio_urls=papers_minio_urls if papers_minio_urls else None
             )
+            multi_prompt_template = MULTI_PAPER_QA_PROMPT
+            prompt = multi_prompt_template.format(**prompt_data)
             
             # Generate answer using LLM
-            prompt = qa_config.multi_paper_prompt.format(**prompt_data)
-            
-            if qa_config.verbose:
-                log.info(f"Generated prompt for search results QA: {prompt[:200]}...")
-            
             response = await self.llm.acomplete(prompt)
             answer = str(response)
             
@@ -418,7 +410,6 @@ class QAAgent:
             max_search_papers: Number of papers from search
             max_search_chunks_per_paper: Chunks per search paper
         """
-        import time
         start_time = time.time()
         try:
             if not paper_ids and not search_query:
@@ -476,7 +467,8 @@ class QAAgent:
                 image_descriptions=image_descriptions,
                 papers_minio_urls=papers_minio_urls or None
             )
-            prompt = qa_config.multi_paper_prompt.format(**prompt_data)
+            multi_prompt_template = MULTI_PAPER_QA_PROMPT
+            prompt = multi_prompt_template.format(**prompt_data)
             if qa_config.verbose:
                 log.info(f"Generated prompt for mixed QA: {prompt[:200]}...")
             response = await self.llm.acomplete(prompt)

@@ -65,260 +65,164 @@ class QARetrievalTool:
         """
         if es_service is None:
             self.es_service = ElasticsearchSearchService(
-                es_host=qa_config.es_host,
+                es_host=qa_config.es_host or config.ES_HOST,
                 index_name=config.ES_INDEX_NAME,
                 bge_model=config.BGE_MODEL_NAME,
                 bge_cache_dir=config.BGE_CACHE_DIR
             )
         else:
             self.es_service = es_service
-    
-    async def retrieve_single_paper_context(
-        self, 
-        paper_id: str, 
-        question: str, 
-        max_chunks: int = None
-    ) -> List[ContextChunk]:
-        """
-        Retrieve relevant context chunks from a single paper.
-        
-        Args:
-            paper_id: Paper ID to search within
-            question: Question to find relevant context for
-            max_chunks: Maximum number of chunks to return
-            
-        Returns:
-            List of relevant context chunks
-        """
-        max_chunks = max_chunks or qa_config.max_context_chunks
-        
-        try:
-            log.info(f"Retrieving context for paper {paper_id} with question: {question}")
-            
-            # Search within the specific paper using hybrid search
-            results = self.es_service.search(
-                query=question,
-                max_results=max_chunks * 2,  # Get more for filtering
-                search_mode="hybrid",
-                include_chunks=True
-            )
-            
-            # Filter results to only include the specified paper
-            paper_results = [r for r in results if r.paper_id == paper_id]
-            
-            if not paper_results:
-                log.warning(f"No results found for paper {paper_id}")
-                return []
-            
-            # Convert to ContextChunk objects
-            context_chunks = []
-            for result in paper_results[:max_chunks]:
-                # Get detailed paper information
-                paper_details = self.es_service.get_paper_details(paper_id)
-                if not paper_details:
-                    continue
-                
-                # Extract chunk information
-                chunk = ContextChunk(
-                    paper_id=paper_id,
-                    paper_title=paper_details.title,
-                    chunk_index=0,  # Will be updated if we have chunk info
-                    chunk_text=result.abstract or "",  # Use abstract as context
-                    relevance_score=result.score,
-                    section_path=None,
-                    page_number=None,
-                    image_urls=[]
-                )
-                
-                # If we have chunk matches, use the best one
-                if hasattr(result, 'chunk_matches') and result.chunk_matches:
-                    best_chunk = result.chunk_matches[0]
-                    chunk.chunk_text = best_chunk.get('chunk_text', chunk.chunk_text)
-                    chunk.chunk_index = best_chunk.get('chunk_index', 0)
-                    chunk.chunk_start = best_chunk.get('chunk_start', 0)
-                    chunk.chunk_end = best_chunk.get('chunk_end', 0)
-                    chunk.section_path = best_chunk.get('section_path')
-                    chunk.page_number = best_chunk.get('page_number')
-                    chunk.image_urls = best_chunk.get('image_urls', [])
-                
-                context_chunks.append(chunk)
-            
-            log.info(f"Retrieved {len(context_chunks)} context chunks for paper {paper_id}")
-            return context_chunks
-            
-        except Exception as e:
-            log.error(f"Error retrieving single paper context: {e}")
-            return []
-    
-    async def retrieve_multi_paper_context(
-        self, 
-        paper_ids: List[str], 
-        question: str, 
-        max_chunks_per_paper: int = 3
-    ) -> List[ContextChunk]:
-        """
-        Retrieve relevant context chunks from multiple papers.
-        
-        Args:
-            paper_ids: List of paper IDs to search within
-            question: Question to find relevant context for
-            max_chunks_per_paper: Maximum chunks per paper
-            
-        Returns:
-            List of relevant context chunks from all papers
-        """
-        all_chunks = []
-        
-        for paper_id in paper_ids:
-            chunks = await self.retrieve_single_paper_context(
-                paper_id, question, max_chunks_per_paper
-            )
-            all_chunks.extend(chunks)
-        
-        # Sort by relevance score
-        all_chunks.sort(key=lambda x: x.relevance_score, reverse=True)
-        
-        # Limit total chunks
-        max_total = qa_config.max_context_chunks
-        return all_chunks[:max_total]
-    
-    async def retrieve_search_results_context(
-        self, 
-        search_query: str, 
-        question: str, 
-        max_papers: int = 5,
-        max_chunks_per_paper: int = 2
-    ) -> List[ContextChunk]:
-        """
-        Retrieve context from papers returned by a search query.
-        
-        Args:
-            search_query: Original search query that returned papers
-            question: Question to find relevant context for
-            max_papers: Maximum number of papers to include
-            max_chunks_per_paper: Maximum chunks per paper
-            
-        Returns:
-            List of relevant context chunks
-        """
-        try:
-            log.info(f"Retrieving context from search results for query: {search_query}")
-            
-            # First, get papers from the search query
-            search_results = self.es_service.search(
-                query=search_query,
-                max_results=max_papers,
-                search_mode="hybrid",
-                include_chunks=False
-            )
-            
-            if not search_results:
-                log.warning(f"No search results found for query: {search_query}")
-                return []
-            
-            # Extract paper IDs
-            paper_ids = [result.paper_id for result in search_results]
-            
-            # Get context chunks from these papers
-            context_chunks = await self.retrieve_multi_paper_context(
-                paper_ids, question, max_chunks_per_paper
-            )
-            
-            log.info(f"Retrieved {len(context_chunks)} context chunks from {len(paper_ids)} papers")
-            return context_chunks
-            
-        except Exception as e:
-            log.error(f"Error retrieving search results context: {e}")
-            return []
-    
-    async def get_paper_minio_urls(self, paper_id: str) -> Dict[str, str]:
-        """
-        Get MinIO URLs for all components of a paper.
-        
-        Args:
-            paper_id: Paper identifier
-            
-        Returns:
-            Dictionary with MinIO URLs for paper components
-        """
-        try:
-            # Try to get manifest from MinIO
-            from data_pipeline.minio_storage import MinIOStorage
-            
-            minio_storage = MinIOStorage(endpoint=qa_config.minio_endpoint)
-            manifest_path = f"{paper_id}/manifest.json"
-            
-            try:
-                # Download manifest
-                manifest_content = minio_storage.download_file_content(
-                    bucket_name=qa_config.minio_bucket,
-                    object_name=manifest_path
-                )
-                
-                manifest = json.loads(manifest_content)
-                return manifest.get("urls", {})
-                
-            except Exception as e:
-                log.warning(f"Could not retrieve manifest for {paper_id}: {e}")
-                
-                # Fallback: construct URLs based on bucket structure
-                base_url = f"{qa_config.minio_endpoint}/{qa_config.minio_bucket}"
-                return {
-                    "pdf": f"{base_url}/{paper_id}/pdf/{paper_id}.pdf",
-                    "metadata": f"{base_url}/{paper_id}/metadata/{paper_id}.json",
-                    "markdown": f"{base_url}/{paper_id}/markdown/index.md",
-                    "images": f"{base_url}/{paper_id}/images/"
+        # cache embedder reference for query reuse
+        self._embedder = self.es_service.embedder
+
+    # ---------------- New helper methods -----------------
+    def _build_minio_urls(self, paper_id: str) -> Dict[str, str]:
+        base = f"{qa_config.minio_endpoint}/{qa_config.minio_bucket}/papers/{paper_id}"
+        primary_md = f"{base}/markdown/{paper_id}.md"
+        fallback_md = f"{base}/markdown/index.md"
+        return {
+            "pdf": f"{base}/pdf/{paper_id}.pdf",
+            "metadata": f"{base}/metadata/{paper_id}.json",
+            "markdown_primary": primary_md,
+            "markdown_fallback": fallback_md,
+            # unified key consumed by ContextBuilder (prefer primary)
+            "markdown": primary_md
+        }
+
+    def _query_chunks_for_paper(self, paper_id: str, question: str, size: int, use_semantic: bool = True) -> List[Dict[str, Any]]:
+        """Query ES directly for chunk documents of a paper with optional semantic scoring."""
+        # Build base bool filter
+        must_filters = [
+            {"term": {"paper_id": paper_id}},
+            {"term": {"doc_type": "chunk"}}
+        ]
+
+        should_clauses: List[Dict[str, Any]] = []
+        if question:
+            should_clauses.append({
+                "match": {
+                    "chunk_text": {
+                        "query": question,
+                        "boost": 1.0
+                    }
                 }
-                
-        except Exception as e:
-            log.error(f"Error getting MinIO URLs for {paper_id}: {e}")
-            return {}
-    
-    async def get_paper_images(self, paper_id: str) -> List[Dict[str, str]]:
-        """
-        Get list of images for a paper from MinIO.
-        
-        Args:
-            paper_id: Paper identifier
-            
-        Returns:
-            List of image information dictionaries
-        """
+            })
+        script_scores = []
+        query_vector = None
+        if use_semantic and question:
+            query_vector = self._embedder.encode(question)
+            if hasattr(query_vector, 'tolist'):
+                query_vector = query_vector.tolist()
+            # semantic scoring on chunk_embedding
+            script_scores.append({
+                "script_score": {
+                    "query": {"match_all": {}},
+                    "script": {
+                        "source": "cosineSimilarity(params.qvec, 'chunk_embedding') + 1.0",
+                        "params": {"qvec": query_vector}
+                    },
+                    "boost": 1.0
+                }
+            })
+        # If we have script scores, we treat them as should clauses too
+        should_clauses.extend(script_scores)
+        if not should_clauses:
+            # fallback to match_all
+            should_clauses.append({"match_all": {}})
+
+        body = {
+            "query": {
+                "bool": {
+                    "filter": must_filters,
+                    "should": should_clauses,
+                    "minimum_should_match": 1
+                }
+            },
+            "size": size,
+            "_source": {
+                "excludes": ["*_embedding"]
+            }
+        }
+        es = self.es_service.indexer.es
+        resp = es.search(index=self.es_service.indexer.index_name, body=body)
+        hits = resp.get('hits', {}).get('hits', [])
+        return [h['_source'] | {'_score': h.get('_score', 0)} for h in hits]
+
+    def _convert_chunk_docs(self, paper_id: str, chunks: List[Dict[str, Any]], paper_title: str, limit: int) -> List[ContextChunk]:
+        out: List[ContextChunk] = []
+        for d in chunks[:limit]:
+            text = d.get('chunk_text')
+            if not text:
+                continue
+            out.append(ContextChunk(
+                paper_id=paper_id,
+                paper_title=paper_title,
+                chunk_index=d.get('chunk_index', 0),
+                chunk_text=text,
+                relevance_score=d.get('_score', 0.0),
+                chunk_start=d.get('chunk_start', 0),
+                chunk_end=d.get('chunk_end', 0),
+                section_path=None,
+                page_number=None,
+                image_urls=[]
+            ))
+        return out
+
+    async def retrieve_single_paper_context(self, paper_id: str, question: str, max_chunks: int = None) -> List[ContextChunk]:
+        max_chunks = max_chunks or qa_config.max_context_chunks or 10
         try:
-            from data_pipeline.minio_storage import MinIOStorage
-            
-            minio_storage = MinIOStorage(endpoint=qa_config.minio_endpoint)
-            images_path = f"{paper_id}/images/"
-            
-            # List objects in images directory
-            objects = minio_storage.list_objects(
-                bucket_name=qa_config.minio_bucket,
-                prefix=images_path
-            )
-            
-            images = []
-            for obj in objects:
-                if obj.endswith(('.png', '.jpg', '.jpeg', '.gif', '.svg')):
-                    # Extract image info from filename: fig_p{page}_{idx}_{sha16}.{ext}
-                    filename = obj.split('/')[-1]
-                    match = re.match(r'fig_p(\d+)_(\d+)_([a-f0-9]{16})\.(\w+)', filename)
-                    
-                    if match:
-                        page_num, idx, sha16, ext = match.groups()
-                        images.append({
-                            "filename": filename,
-                            "page": int(page_num),
-                            "index": int(idx),
-                            "sha16": sha16,
-                            "extension": ext,
-                            "url": f"{qa_config.minio_endpoint}/{qa_config.minio_bucket}/{obj}"
-                        })
-            
-            return images
-            
+            # fetch paper title from a paper doc (doc_type=paper)
+            es = self.es_service.indexer.es
+            meta_body = {
+                "query": {"bool": {"filter": [{"term": {"paper_id": paper_id}}, {"term": {"doc_type": "paper"}}]}},
+                "size": 1,
+                "_source": {"excludes": ["*_embedding"]}
+            }
+            meta_resp = es.search(index=self.es_service.indexer.index_name, body=meta_body)
+            paper_title = "Untitled"
+            hits_meta = meta_resp.get('hits', {}).get('hits', [])
+            if hits_meta:
+                paper_title = hits_meta[0]['_source'].get('title', paper_title)
+
+            raw_chunks = self._query_chunks_for_paper(paper_id, question, size=max_chunks * 3, use_semantic=True)
+            if not raw_chunks:
+                return []
+            context = self._convert_chunk_docs(paper_id, raw_chunks, paper_title, max_chunks)
+            return context
         except Exception as e:
-            log.error(f"Error getting images for {paper_id}: {e}")
+            log.error(f"retrieve_single_paper_context error: {e}")
             return []
+
+    async def retrieve_multi_paper_context(self, paper_ids: List[str], question: str, max_chunks_per_paper: int = 3) -> List[ContextChunk]:
+        results: List[ContextChunk] = []
+        for pid in paper_ids:
+            chunks = await self.retrieve_single_paper_context(pid, question, max_chunks=max_chunks_per_paper)
+            results.extend(chunks)
+        # sort global by score desc then cut overall max
+        results.sort(key=lambda c: c.relevance_score, reverse=True)
+        max_total = qa_config.max_context_chunks or 10
+        return results[:max_total]
+
+    async def retrieve_search_results_context(self, search_query: str, question: str, max_papers: int = 5, max_chunks_per_paper: int = 2) -> List[ContextChunk]:
+        # First get top paper docs using search service (paper-level search)
+        papers = self.es_service.search(
+            query=search_query,
+            max_results=max_papers,
+            search_mode="hybrid",
+            include_chunks=False
+        )
+        if not papers:
+            return []
+        paper_ids = [p.paper_id for p in papers]
+        return await self.retrieve_multi_paper_context(paper_ids, question, max_chunks_per_paper)
+
+    async def get_paper_minio_urls(self, paper_id: str) -> Dict[str, str]:
+        # simplified builder without manifest / MinIOStorage
+        return self._build_minio_urls(paper_id)
+
+    async def get_paper_images(self, paper_id: str) -> List[Dict[str, str]]:
+        # images not indexed; return empty list for now
+        return []
 
 
 class ImageAnalysisTool:

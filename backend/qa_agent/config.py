@@ -11,16 +11,10 @@ load_dotenv()
 
 
 class QAAgentConfig(BaseModel):
-    """Configuration for QA Agent following llama_agent pattern"""
+    """Configuration for QA Agent (Gemini-only)."""
 
-    # LLM Configuration
-    openai_api_key: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
+    # Gemini LLM Configuration
     google_api_key: str = Field(default_factory=lambda: os.getenv("GOOGLE_API_KEY", ""))
-    default_llm_provider: str = Field(default_factory=lambda: os.getenv("QA_AGENT_DEFAULT_LLM_PROVIDER", "openai"))
-    
-    # Model Configuration
-    openai_model: str = Field(default_factory=lambda: os.getenv("QA_AGENT_OPENAI_MODEL", "gpt-4o"))
-    openai_mini_model: str = Field(default_factory=lambda: os.getenv("QA_AGENT_OPENAI_MINI_MODEL", "gpt-4o-mini"))
     google_model: str = Field(default_factory=lambda: os.getenv("QA_AGENT_GOOGLE_MODEL", "gemini-1.5-pro"))
 
     # QA Agent Behavior Settings
@@ -41,9 +35,8 @@ class QAAgentConfig(BaseModel):
 
     # Service Endpoints
     es_host: str = Field(default_factory=lambda: os.getenv("QA_AGENT_ES_HOST", "http://103.3.247.120:9202"))
-    minio_endpoint: str = Field(default_factory=lambda: os.getenv("QA_AGENT_MINIO_ENDPOINT", "http://103.3.247.120:9002"))
+    minio_endpoint: str = Field(default_factory=lambda: os.getenv("QA_AGENT_MINIO_ENDPOINT", "103.3.247.120:9002"))
     minio_bucket: str = Field(default_factory=lambda: os.getenv("QA_AGENT_MINIO_BUCKET", "papers"))
-
     class Config:
         env_prefix = "QA_AGENT_"
 
@@ -53,21 +46,22 @@ qa_config = QAAgentConfig()
 
 # System Prompts
 SINGLE_PAPER_QA_PROMPT = """
-You are an expert research assistant specializing in academic paper analysis. 
+You are an expert research assistant specializing in academic paper analysis.
 You will be given a question about a specific research paper and relevant context chunks from that paper.
 
 Instructions:
-1. Answer the question based ONLY on the provided context chunks
-2. If the context doesn't contain enough information to answer the question, say so clearly
-3. Provide specific citations by referencing the chunk numbers (e.g., "According to chunk 3...")
-4. If images are mentioned in the context, describe what they show based on the provided image URLs
-5. Be precise and factual - do not make assumptions beyond what's in the context
-6. If multiple chunks provide conflicting information, note this discrepancy
+1. Answer the question based ONLY on the provided context chunks.
+2. If the context doesn't contain enough information to answer the question, explicitly say so.
+3. Provide specific citations by referencing the chunk numbers (e.g., "According to chunk 3 ...").
+4. If images are mentioned in the context, describe what they show based on the provided image URLs.
+5. Be precise and factual – do not make assumptions beyond what's in the context.
+6. If multiple chunks provide conflicting information, note the discrepancy.
 
-Context chunks from paper "{paper_title}":
+Paper title: "{paper_title}"
+Context Chunks:
 {context_chunks}
 
-Question: {question}
+User Question: {question}
 
 Answer:"""
 
@@ -106,44 +100,5 @@ Section: {section_path}
 
 Description:"""
 
-class QAConfig:
-    """Configuration class for QA Agent"""
-    
-    # LLM Settings
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    google_api_key = os.getenv("GOOGLE_API_KEY")
-    default_llm_provider = os.getenv("DEFAULT_LLM_PROVIDER")
-    
-    # Model Settings
-    openai_model = os.getenv("OPENAI_MODEL")
-    openai_mini_model = os.getenv("OPENAI_MINI_MODEL")
-    google_model = os.getenv("GOOGLE_MODEL")
-    
-    # Agent Behavior
-    max_tokens = os.getenv("QA_MAX_TOKENS")
-    temperature = os.getenv("QA_TEMPERATURE")
-    max_iterations = os.getenv("QA_MAX_ITERATIONS")
-    verbose = os.getenv("QA_VERBOSE")
-    
-    # Context and Retrieval
-    max_context_chunks = os.getenv("QA_MAX_CONTEXT_CHUNKS")
-    chunk_overlap = os.getenv("QA_CHUNK_OVERLAP")
-    rerank_results = os.getenv("QA_RERANK_RESULTS")
-    include_images = os.getenv("QA_INCLUDE_IMAGES")
-    
-    # Performance
-    timeout_seconds = os.getenv("QA_TIMEOUT_SECONDS")
-    retry_attempts = os.getenv("QA_RETRY_ATTEMPTS")
-    
-    # Service Endpoints
-    es_host = os.getenv("ES_HOST")
-    minio_endpoint = os.getenv("MINIO_ENDPOINT")
-    minio_bucket = os.getenv("MINIO_BUCKET")
-    
-    # Prompts
-    single_paper_prompt = os.getenv("SINGLE_PAPER_QA_PROMPT")
-    multi_paper_prompt = os.getenv("MULTI_PAPER_QA_PROMPT")
-    image_analysis_prompt = os.getenv("IMAGE_ANALYSIS_PROMPT") 
-
-# Global configuration instance
-qa_config = QAConfig()
+# NOTE: Removed legacy QAConfig (untyped) that overwrote qa_config with None values.
+# qa_config now strictly refers to QAAgentConfig instance above.
