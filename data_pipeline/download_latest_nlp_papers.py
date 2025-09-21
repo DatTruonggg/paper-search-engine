@@ -1,264 +1,198 @@
-#!/usr/bin/env python3
-"""
-Download Latest NLP Papers from ArXiv
-Uses advanced filtering with categories and keywords to find and download recent NLP papers
-"""
-
+import os
+import io 
 import asyncio
 import json
 from logs import log
-from pathlib import Path
+import pandas as pd 
 from datetime import datetime
 from .arxiv_nlp_pipeline import ArxivDataPipeline
 from .arxiv_pdf_downloader import ArxivPDFDownloader
+from dotenv import load_dotenv
+from minio.error import S3Error
+from typing import List, Dict, Optional
+
+
+load_dotenv()
 
 class NLPPaperDownloader:
-    def __init__(self, data_dir: str = "../data"):
-        self.pipeline = ArxivDataPipeline(data_dir)
+    def __init__(self):
+        self.pipeline = ArxivDataPipeline()
         self.pdf_downloader = ArxivPDFDownloader(
-            pdfs_dir=str(self.pipeline.pdfs_dir),
-            max_concurrent=5,  # Conservative to avoid rate limiting
-            delay_between_requests=1.0  # 1 second delay
+            max_concurrent=5,
+            delay_between_requests=1.0
         )
-        self.data_dir = Path(data_dir)
-    
-    def load_or_download_dataset(self):
+        # Prefer MINIO_BUCKET then fallback to BUCKET_NAME
+        self.bucket_name = str(os.getenv("MINIO_BUCKET") or os.getenv("BUCKET_NAME") or "papers")
+
+    def dataset_exists_in_minio(self, object_name: str):
         """Load dataset from cache or download if not available"""
         # Check if we already have the dataset
-        json_files = list(self.pipeline.raw_dir.glob("*.json"))
-        
-        if json_files:
-            log.info(f"Found existing dataset at {json_files[0]}")
+        try:
+            # pipeline.minio_client is MinioStorage wrapper -> underlying client at .minio_client
+            self.pipeline.minio_client.stat_object(
+                bucket_name=self.bucket_name,
+                object_name=object_name
+            )
             return True
-        else:
-            log.info("Dataset not found, downloading from Kaggle...")
-            try:
-                self.pipeline.download_dataset()
-                return True
-            except Exception as e:
-                log.error(f"Failed to download dataset: {e}")
-                return False
-    
-    def process_full_dataset(self, limit_papers: int = None):
-        """Process the full dataset without the 500k limit"""
-        json_file = self.pipeline.raw_dir / "arxiv-metadata-oai-snapshot.json"
-        
-        if not json_file.exists():
-            json_files = list(self.pipeline.raw_dir.glob("*.json"))
-            if json_files:
-                json_file = json_files[0]
-            else:
-                raise FileNotFoundError("No metadata JSON file found")
-        
-        log.info(f"Loading full dataset from {json_file}")
-        
-        papers = []
-        with open(json_file, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f):
-                if line_num % 100000 == 0 and line_num > 0:
-                    log.info(f"Loaded {line_num:,} papers...")
-                
-                if line.strip():
+        except S3Error: 
+            return False 
+        except Exception as e: 
+            log.warning(f"[DOWNLOAD] Unexpected stat error: {e}")
+            return False
+
+    def ensure_dataset_available(self, object_name: str): 
+        if self.dataset_exists_in_minio(object_name):
+            log.info(f"[DOWNLOAD] Found existing datatset object: {object_name}")
+            return
+        log.info("[DOWNLOAD] Dataset not found in MinIO. Downloading + uploading...")
+        self.pipeline.download_dataset()
+        if not self.dataset_exists_in_minio(object_name):
+            raise RuntimeError("Dataset upload failed or object not found after download.")
+
+    def load_dataset_from_minio(self, object_name: str, limit_lines: Optional[int] = None):
+        """Stream a large JSONL (arxiv metadata) from MinIO safely without closing underlying prematurely.
+
+        Uses chunk streaming to avoid ValueError: I/O operation on closed file.
+        """
+        log.info(f"[DOWNLOAD] Loading data from MinIO object: {object_name}")
+        try:
+            response = self.pipeline.minio_client.get_object(
+                self.bucket_name, object_name
+            )
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"Failed to open dataset object: {e}")
+
+        papers: List[Dict] = []
+        bytes_buffer = b""
+        line_count = 0
+        chunk_size = 64 * 1024  # 64KB
+        try:
+            for chunk in response.stream(chunk_size):
+                if not chunk:
+                    continue
+                bytes_buffer += chunk
+                while b"\n" in bytes_buffer:
+                    raw_line, bytes_buffer = bytes_buffer.split(b"\n", 1)
+                    if limit_lines and line_count >= limit_lines:
+                        break
+                    line_count += 1
+                    line = raw_line.strip()
+                    if not line:
+                        continue
                     try:
-                        paper = json.loads(line)
+                        paper = json.loads(line.decode("utf-8"))
                         papers.append(paper)
                     except json.JSONDecodeError:
                         continue
-                
-                # Optional limit for testing
-                if limit_papers and line_num >= limit_papers:
-                    log.info(f"Reached limit of {limit_papers:,} papers")
+                    if line_count % 100_000 == 0:
+                        log.info(f"[DOWNLOAD] Streamed {line_count:,} lines ...")
+                if limit_lines and line_count >= limit_lines:
                     break
-        
-        log.info(f"Total papers loaded: {len(papers):,}")
-        return papers
+            # Process tail (no newline at EOF)
+            if (not limit_lines or line_count < limit_lines) and bytes_buffer.strip():
+                try:
+                    papers.append(json.loads(bytes_buffer.decode("utf-8")))
+                except json.JSONDecodeError:
+                    pass
+        finally:
+            response.close()
+            response.release_conn()
+
+        log.info(f"[DOWNLOAD] Loaded {len(papers):,} rows into memory (requested limit={limit_lines})")
+        if not papers:
+            return pd.DataFrame()
+        df = pd.DataFrame(papers)
+        # Defer expensive datetime conversion until after filtering to save memory.
+        log.debug("[DOWNLOAD] DONE load_dataset_from_minio")
+        return df
     
-    async def find_and_download_nlp_papers(self, 
-                                   num_papers: int = 1000,
-                                   use_categories: bool = True,
-                                   use_keywords: bool = True,
-                                   min_keyword_matches: int = 1,
-                                   limit_dataset: int = None):
-        """
-        Main function to find and download latest NLP papers
-        """
-        log.info("="*80)
-        log.info("DOWNLOADING LATEST NLP PAPERS FROM ARXIV")
-        log.info("="*80)
-        log.info(f"Target papers: {num_papers}")
-        log.info(f"Use categories: {use_categories}")
-        log.info(f"Use keywords: {use_keywords}")
-        log.info(f"Min keyword matches: {min_keyword_matches}")
+    # def save_json(self, data: Dict, name: str):
+    #     """Persist a small JSON summary/analysis to local disk (logs dir)."""
+    #     from pathlib import Path
+    #     out_dir = Path("./data/logs")
+    #     out_dir.mkdir(parents=True, exist_ok=True)
+    #     path = out_dir / f"{name}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+    #     with path.open('w', encoding='utf-8') as f:
+    #         json.dump(data, f, ensure_ascii=False, indent=2)
+    #     return path
+
+    async def run(self,
+                  papers: int = 500,
+                  use_categories: bool = True, 
+                  use_keywords: bool = True,
+                  min_key_matches: int = 1,
+                  limit_dataset_lines: Optional[int] = None): 
+        # 1. Ensure dataset 
+        self.ensure_dataset_available(object_name="arxiv-metadata-oai-snapshot.json")
         
-        # Step 1: Load dataset
-        if not self.load_or_download_dataset():
-            log.error("Failed to load dataset")
-            return None
+        # 2. Load dataset
+        df = self.load_dataset_from_minio(object_name="arxiv-metadata-oai-snapshot.json", limit_lines=limit_dataset_lines)
+        if df.empty:
+            log.error(f"[DOWNLOAD] Empty dataset loaded.")
+            return []
+        log.info(f"[DOWNLOAD] Dataset columns: {list(df.columns)[:15]} ... total={len(df.columns)}")
+
+        # 3. Filter
+        filtered_df = self.pipeline.filter_nlp_papers_advanced(df,
+                                                               use_categories,
+                                                               use_keywords,
+                                                               min_key_matches,
+                                                               papers)
+        log.info(f"[DOWNLOAD] Filtered NLP papers: {len(filtered_df):,}")
+
+        if filtered_df.empty:
+            log.warning(f"[DOWNLOAD] No papers matched criteria")
+            return []
         
-        # Step 2: Load papers into dataframe
-        try:
-            import pandas as pd
-            papers_data = self.process_full_dataset(limit_dataset)
-            df = pd.DataFrame(papers_data)
-            log.info(f"Created dataframe with {len(df):,} papers")
-            log.info(f"Columns: {df.columns.tolist()}")
-        except Exception as e:
-            log.error(f"Failed to load papers: {e}")
-            return None
+        # 4. 
+        #analysis = self.pipeline.analyze_nlp_filtering_results(filtered_df)
         
-        # Step 3: Filter NLP papers with early stopping
-        try:
-            # The new method already returns the latest papers up to target amount
-            latest_papers = self.pipeline.filter_nlp_papers_advanced(
-                df, 
-                use_categories=use_categories,
-                use_keywords=use_keywords,
-                min_keyword_matches=min_keyword_matches,
-                target_papers=num_papers  # Will stop after finding this many papers
-            )
-            log.info(f"Found {len(latest_papers):,} NLP papers")
-        except Exception as e:
-            log.error(f"Failed to filter papers: {e}")
-            return None
-        
-        if len(latest_papers) == 0:
-            log.error("No papers found after filtering")
-            return None
-        
-        # Step 5: Analyze filtering results
-        try:
-            analysis = self.pipeline.analyze_nlp_filtering_results(latest_papers)
-            self.save_analysis(analysis, latest_papers)
-        except Exception as e:
-            log.warning(f"Failed to analyze results: {e}")
-        
-        # Step 6: Prepare paper data for download
-        papers_to_download = []
-        for _, paper in latest_papers.iterrows():
-            paper_data = {
-                'id': paper.get('id', ''),
-                'title': paper.get('title', ''),
-                'authors': paper.get('authors', ''),
-                'abstract': paper.get('abstract', ''),
-                'categories': paper.get('categories', ''),
-                'year': paper.get('year', None),
-                'matched_keywords': paper.get('matched_nlp_keywords', []),
-                'keyword_count': paper.get('keyword_match_count', 0)
-            }
-            papers_to_download.append(paper_data)
-        
-        # Step 7: Download PDFs
-        log.info("="*80)
-        log.info("STARTING PDF DOWNLOADS")
-        log.info("="*80)
-        
-        try:
-            results = await self.pdf_downloader.download_batch(papers_to_download)
-            self.pdf_downloader.print_statistics()
-            self.pdf_downloader.save_download_log(results, '../data/logs/nlp_papers_download_log.json')
-            
-            # Save successful downloads info
-            successful_papers = [paper for paper, result in zip(papers_to_download, results) 
-                               if result.get('status') == 'success']
-            
-            success_file = self.data_dir / 'logs' / f'successful_nlp_downloads_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
-            with open(success_file, 'w') as f:
-                json.dump({
-                    'download_timestamp': datetime.now().isoformat(),
-                    'total_requested': len(papers_to_download),
-                    'successful_downloads': len(successful_papers),
-                    'papers': successful_papers
-                }, f, indent=2)
-            
-            log.info(f"Download complete! Check {success_file} for details")
-            return results
-            
-        except Exception as e:
-            log.error(f"Failed to download PDFs: {e}")
-            return None
-    
-    def save_analysis(self, analysis: dict, papers_df):
-        """Save analysis results to file"""
-        analysis_file = self.data_dir / 'logs' / f'nlp_filtering_analysis_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
-        
-        # Convert any numpy types to native Python types for JSON serialization
-        def convert_for_json(obj):
-            if hasattr(obj, 'item'):  # numpy scalar
-                return obj.item()
-            elif hasattr(obj, 'tolist'):  # numpy array
-                return obj.tolist()
-            return obj
-        
-        # Clean the analysis data
-        clean_analysis = {}
-        for key, value in analysis.items():
-            if isinstance(value, dict):
-                clean_analysis[key] = {k: convert_for_json(v) for k, v in value.items()}
-            else:
-                clean_analysis[key] = convert_for_json(value)
-        
-        with open(analysis_file, 'w') as f:
-            json.dump({
-                'timestamp': datetime.now().isoformat(),
-                'analysis': clean_analysis,
-                'sample_papers': papers_df.head(10)[['id', 'title', 'categories', 'matched_nlp_keywords']].to_dict('records')
-            }, f, indent=2)
-        
-        log.info(f"Analysis saved to {analysis_file}")
-        
-        # Print key statistics
-        log.info("\n" + "="*60)
-        log.info("NLP FILTERING ANALYSIS")
-        log.info("="*60)
-        log.info(f"Total filtered papers: {analysis.get('total_papers', 0):,}")
-        log.info(f"Papers with abstracts: {analysis.get('papers_with_abstract', 0):,}")
-        
-        if 'top_keywords' in analysis:
-            log.info("\nTop matched keywords:")
-            for keyword, count in list(analysis['top_keywords'].items())[:10]:
-                log.info(f"  {keyword}: {count}")
-        
-        if 'top_categories' in analysis:
-            log.info("\nTop categories:")
-            for category, count in list(analysis['top_categories'].items())[:10]:
-                log.info(f"  {category}: {count}")
-        
-        if 'year_distribution' in analysis:
-            log.info("\nYear distribution:")
-            for year, count in list(analysis['year_distribution'].items())[:5]:
-                log.info(f"  {year}: {count}")
+        # 5. Prepare list for downloader
+        papers_to_download: List[Dict] = []
+        for _, row in filtered_df.iterrows():
+            papers_to_download.append({
+                "id": row.get("id", ""),
+                "title": row.get("title", ""),
+                "authors": row.get("authors", ""),
+                "abstract": row.get("abstract", ""),
+                "categories": row.get("categories", ""),
+                "year": row.get("year", None),
+                "matched_keywords": row.get("matched_nlp_keywords", []),
+                "keyword_count": row.get("keyword_match_count", 0)
+            })
+
+        # 6. Download PDFs -> Minio
+        log.info(f"[DOWNLOAD] Starting PDF downloads for {len(papers_to_download)} papers...")
+        results = await self.pdf_downloader.download_batch(papers_to_download)
+
+        # 7. Log Summeries 
+
+        success = sum(1 for r in results if r.get("status") == "success")
+        skipped = sum(1 for r in results if r.get("status") == "skipped")
+        failed = sum(1 for r in results if r.get("status") not in ("success", "skipped"))
+        summary = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "requested": len(papers_to_download),
+            "success": success,
+            "skipped": skipped,
+            "failed": failed
+        }
+        # summary_path = self.save_json(summary, "download_summary")
+        # log.info(f"[PDF] Summary saved: {summary_path} ({summary})")
+        log.info("DONE")
+        return summary
 
 
 async def main():
-    """Main execution function"""
     downloader = NLPPaperDownloader()
-    
-    # Configuration
-    NUM_PAPERS = 1000
-    USE_CATEGORIES = True
-    USE_KEYWORDS = False
-    MIN_KEYWORD_MATCHES = 1
-    LIMIT_DATASET = None  # Set to None for full dataset, or number for testing
-    
-    log.info("Starting NLP paper download process...")
-    
-    results = await downloader.find_and_download_nlp_papers(
-        num_papers=NUM_PAPERS,
-        use_categories=USE_CATEGORIES,
-        use_keywords=USE_KEYWORDS,
-        min_keyword_matches=MIN_KEYWORD_MATCHES,
-        limit_dataset=LIMIT_DATASET
+    results = await downloader.run(
+        papers=1000,
+        use_categories=True,
+        use_keywords=False,
+        min_key_matches=1,
+        limit_dataset_lines=None  # override here if needed
     )
-    
-    if results:
-        successful = sum(1 for r in results if r.get('status') == 'success')
-        log.info(f"\n✓ Download process completed!")
-        log.info(f"✓ Successfully downloaded {successful}/{len(results)} papers")
-        log.info(f"✓ PDFs saved to: {downloader.pipeline.pdfs_dir}")
-        log.info(f"✓ Logs saved to: {downloader.pipeline.logs_dir}")
-    else:
-        log.error("Download process failed!")
-
+    log.info(f"[DONE] Total results: {results}")
 
 if __name__ == "__main__":
     asyncio.run(main())

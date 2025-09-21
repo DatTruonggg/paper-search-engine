@@ -84,3 +84,5 @@ docker-compose.override.yml
 *.dockerfile.swp
 pytest*
 models/
+config.py 
+backend/services/ingestion_service.py

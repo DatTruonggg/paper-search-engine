@@ -1,10 +1,15 @@
-"""
-QA API endpoints for single-paper and multi-paper question answering.
+"""QA API endpoints for question answering across single, multiple, search-result, and mixed paper contexts.
+
+Refactors:
+- Centralized QA agent acquisition
+- Helper for uniform API response building
+- Reduced duplication across endpoints
+- Structured logging fields for easier analysis
 """
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 
 from backend.services import ElasticsearchSearchService
 from backend.config import config
@@ -29,7 +34,12 @@ class SinglePaperQARequest(BaseModel):
 
 class MultiPaperQARequest(BaseModel):
     """Request model for multi-paper QA"""
-    paper_ids: List[str] = Field(..., description="List of paper IDs to search across", min_items=1, max_items=10)
+    paper_ids: List[str] = Field(
+        ..., 
+        description="List of paper IDs to search across", 
+        min_items=1, 
+        max_items=100
+    )
     question: str = Field(..., description="Question to answer", min_length=1, max_length=1000)
     max_chunks_per_paper: int = Field(default=3, ge=1, le=10, description="Maximum chunks per paper")
 
@@ -42,6 +52,20 @@ class SearchResultsQARequest(BaseModel):
     max_chunks_per_paper: int = Field(default=2, ge=1, le=5, description="Maximum chunks per paper")
 
 
+class MixedQARequest(BaseModel):
+    """Request model combining selected paper IDs and/or a search query."""
+    question: str = Field(..., min_length=1, max_length=1000)
+    paper_ids: List[str] | None = Field(default=None, description="Explicit selected (bookmarked) paper IDs")
+    search_query: str | None = Field(default=None, description="Optional fresh search query to augment context")
+    max_chunks_per_selected: int = Field(default=3, ge=1, le=10)
+    max_search_papers: int = Field(default=5, ge=1, le=15)
+    max_search_chunks_per_paper: int = Field(default=2, ge=1, le=5)
+
+    def model_post_init(self, *args, **kwargs):  # type: ignore[override]
+        if (not self.paper_ids or len(self.paper_ids) == 0) and not self.search_query:
+            raise ValueError("Provide at least paper_ids or search_query")
+
+
 class QAResponse(BaseModel):
     """Response model for QA requests"""
     answer: str = Field(description="Generated answer")
@@ -51,7 +75,6 @@ class QAResponse(BaseModel):
     context_chunks_count: int = Field(description="Number of context chunks used")
     papers_involved: List[str] = Field(description="List of paper IDs involved in the answer")
 
-
 class QAHealthResponse(BaseModel):
     """Health check response for QA services"""
     status: str = Field(description="Overall status")
@@ -59,27 +82,45 @@ class QAHealthResponse(BaseModel):
 
 
 def get_qa_agent() -> QAAgent:
-    """Dependency to get QA agent"""
+    """Get (and lazily initialize) the singleton QAAgent instance."""
     global qa_agent
-    if qa_agent is None:
-        try:
-            # Initialize Elasticsearch service
-            es_service = ElasticsearchSearchService(
-                es_host=config.ES_HOST,
-                index_name=config.ES_INDEX_NAME,
-                bge_model=config.BGE_MODEL_NAME,
-                bge_cache_dir=config.BGE_CACHE_DIR
-            )
+    if qa_agent is not None:
+        return qa_agent
+    try:
+        es_service = ElasticsearchSearchService(
+            es_host=config.ES_HOST,
+            index_name=config.ES_INDEX_NAME,
+            bge_model=config.BGE_MODEL_NAME,
+            bge_cache_dir=config.BGE_CACHE_DIR,
+        )
+        qa_agent_obj = QAAgent(es_service=es_service)
+        log.info("QA agent initialized", extra={
+            "es_host": config.ES_HOST,
+            "index": config.ES_INDEX_NAME,
+            "bge_model": config.BGE_MODEL_NAME,
+        })
+        qa_agent = qa_agent_obj
+        return qa_agent
+    except Exception as e:
+        log.error(f"Failed to initialize QA agent: {e}")
+        raise HTTPException(status_code=503, detail="QA agent unavailable")
 
-            # Initialize QA agent
-            qa_agent = QAAgent(es_service=es_service)
-            log.info("QA agent initialized successfully")
 
-        except Exception as e:
-            log.error(f"Failed to initialize QA agent: {e}")
-            raise HTTPException(status_code=503, detail="QA agent unavailable")
+def _build_api_response(agent_response, explicit_paper_ids: Optional[List[str]] = None) -> QAResponse:
+    """Internal helper to convert QAAgent.QAResponse -> API QAResponse.
 
-    return qa_agent
+    If explicit_paper_ids is provided (single-paper flow), we use that directly; otherwise
+    we derive the involved papers from the context chunks.
+    """
+    involved = explicit_paper_ids or list({c.paper_id for c in agent_response.context_chunks})
+    return QAResponse(
+        answer=agent_response.answer,
+        sources=agent_response.sources,
+        confidence_score=agent_response.confidence_score,
+        processing_time=agent_response.processing_time,
+        context_chunks_count=len(agent_response.context_chunks),
+        papers_involved=involved,
+    )
 
 
 @router.get("/health", response_model=QAHealthResponse)
@@ -129,15 +170,7 @@ async def single_paper_qa(request: SinglePaperQARequest):
             max_chunks=request.max_chunks
         )
         
-        # Convert to API response
-        return QAResponse(
-            answer=response.answer,
-            sources=response.sources,
-            confidence_score=response.confidence_score,
-            processing_time=response.processing_time,
-            context_chunks_count=len(response.context_chunks),
-            papers_involved=[request.paper_id]
-        )
+        return _build_api_response(response, explicit_paper_ids=[request.paper_id])
 
     except Exception as e:
         log.exception("Single-paper QA failed")
@@ -166,15 +199,7 @@ async def multi_paper_qa(request: MultiPaperQARequest):
             max_chunks_per_paper=request.max_chunks_per_paper
         )
         
-        # Convert to API response
-        return QAResponse(
-            answer=response.answer,
-            sources=response.sources,
-            confidence_score=response.confidence_score,
-            processing_time=response.processing_time,
-            context_chunks_count=len(response.context_chunks),
-            papers_involved=list(set(chunk.paper_id for chunk in response.context_chunks))
-        )
+        return _build_api_response(response)
 
     except Exception as e:
         log.exception("Multi-paper QA failed")
@@ -204,18 +229,36 @@ async def search_results_qa(request: SearchResultsQARequest):
             max_chunks_per_paper=request.max_chunks_per_paper
         )
         
-        # Convert to API response
-        return QAResponse(
-            answer=response.answer,
-            sources=response.sources,
-            confidence_score=response.confidence_score,
-            processing_time=response.processing_time,
-            context_chunks_count=len(response.context_chunks),
-            papers_involved=list(set(chunk.paper_id for chunk in response.context_chunks))
-        )
+        return _build_api_response(response)
 
     except Exception as e:
         log.exception("Search results QA failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/mixed", response_model=QAResponse)
+async def mixed_qa(request: MixedQARequest):
+    """Answer a question using any combination of selected paper IDs and / or a new search query.
+
+    This supports the UI workflow: user bookmarks some papers (paper_ids), then submits
+    a new question possibly with a fresh search query producing additional dynamic context.
+    At least one of paper_ids or search_query must be provided.
+    """
+    if (not request.paper_ids or len(request.paper_ids) == 0) and not request.search_query:
+        raise HTTPException(status_code=422, detail="Provide at least paper_ids or search_query")
+    try:
+        agent = get_qa_agent()
+        response = await agent.answer_mixed_question(
+            question=request.question,
+            paper_ids=request.paper_ids,
+            search_query=request.search_query,
+            max_chunks_per_selected=request.max_chunks_per_selected,
+            max_search_papers=request.max_search_papers,
+            max_search_chunks_per_paper=request.max_search_chunks_per_paper,
+        )
+        return _build_api_response(response)
+    except Exception as e:
+        log.exception("Mixed QA failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 

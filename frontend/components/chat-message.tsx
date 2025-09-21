@@ -1,25 +1,19 @@
 "use client"
 
 import { Card } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { Bot, User, ChevronDown, Quote, ExternalLink } from "lucide-react"
+import { Bot, User } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useState } from "react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 
 export interface MessageWithCitations {
   id: string
   content: string
   role: "user" | "assistant"
   timestamp: Date
-  sources?: Array<{
-    id: string
-    title: string
-    authors: string[]
-    url?: string
-    type: "paper" | "document" | "url"
-  }>
+  // citations and bibliography removed from UI rendering per spec
+  sources?: Array<unknown>
   bibliography?: string[]
 }
 
@@ -28,37 +22,14 @@ interface ChatMessageProps {
 }
 
 export function ChatMessage({ message }: ChatMessageProps) {
-  const [showBibliography, setShowBibliography] = useState(false)
-
-  const formatMessageContent = (content: string) => {
-    // Convert citation markers to clickable elements
-    return content.split(/(\[[0-9]+\])/).map((part, index) => {
-      const citationMatch = part.match(/\[([0-9]+)\]/)
-      if (citationMatch) {
-        const citationNumber = Number.parseInt(citationMatch[1])
-        const source = message.sources?.[citationNumber - 1]
-
-        return (
-          <button
-            key={index}
-            className="inline-flex items-center px-1 py-0.5 text-xs bg-primary/10 text-primary rounded hover:bg-primary/20 transition-colors"
-            onClick={() => source?.url && window.open(source.url, "_blank")}
-            title={source ? `${source.title} - ${source.authors.join(", ")}` : "Citation"}
-          >
-            [{citationNumber}]
-          </button>
-        )
-      }
-      return part
-    })
-  }
+  const [/* showBibliography */] = useState(false)
 
   return (
     <div className={cn("flex gap-3", message.role === "user" ? "justify-end" : "justify-start")}>
       {message.role === "assistant" && (
         <div className="flex-shrink-0">
-          <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center">
-            <Bot className="h-4 w-4 text-primary-foreground" />
+          <div className="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center">
+            <Bot className="h-4 w-4 text-white" />
           </div>
         </div>
       )}
@@ -67,83 +38,63 @@ export function ChatMessage({ message }: ChatMessageProps) {
         <Card
           className={cn(
             "p-4",
-            message.role === "user" ? "bg-primary text-primary-foreground" : "bg-card text-card-foreground",
+            message.role === "user"
+              ? "bg-emerald-600 text-white"
+              : "bg-white text-slate-800 border border-green-200",
           )}
         >
           <div className="text-sm leading-relaxed text-pretty">
-            {message.role === "assistant" ? formatMessageContent(message.content) : message.content}
-          </div>
-          <div
-            className={cn(
-              "text-xs mt-2 opacity-70",
-              message.role === "user" ? "text-primary-foreground" : "text-muted-foreground",
+            {message.role === "assistant" ? (
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  a: ({ node, ...props }) => (
+                    <a {...props} className="underline text-emerald-700" target="_blank" rel="noreferrer" />
+                  ),
+                  code: ((props: any) => {
+                    const { inline, className, children, ...rest } = props || {}
+                    return (
+                    <code
+                      {...rest}
+                      className={cn(
+                        "rounded px-1.5 py-0.5",
+                        inline ? "bg-slate-100 text-slate-800" : "block bg-slate-900 text-slate-100 p-3 overflow-auto"
+                      )}
+                    >
+                      {children}
+                    </code>
+                    )
+                  }),
+                  h1: ({ children }) => <h1 className="text-lg font-semibold mb-2">{children}</h1>,
+                  h2: ({ children }) => <h2 className="text-base font-semibold mb-2">{children}</h2>,
+                  ul: ({ children }) => <ul className="list-disc pl-5 space-y-1">{children}</ul>,
+                  ol: ({ children }) => <ol className="list-decimal pl-5 space-y-1">{children}</ol>,
+                }}
+              >
+                {message.content}
+              </ReactMarkdown>
+            ) : (
+              message.content
             )}
-          >
-            {message.timestamp.toLocaleTimeString()}
           </div>
+          {message.role === "user" && (
+            <div
+              className={cn(
+                "text-xs mt-2 opacity-70",
+                "text-white/80",
+              )}
+            >
+              {message.timestamp.toLocaleTimeString()}
+            </div>
+          )}
         </Card>
 
-        {/* Sources and Bibliography for Assistant Messages */}
-        {message.role === "assistant" && (message.sources?.length || message.bibliography?.length) && (
-          <div className="w-full space-y-2">
-            {/* Sources */}
-            {message.sources && message.sources.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {message.sources.map((source, index) => (
-                  <div key={source.id} className="flex items-center gap-1">
-                    <Badge variant="outline" className="text-xs">
-                      <Quote className="h-3 w-3 mr-1" />[{index + 1}] {source.type}
-                    </Badge>
-                    {source.url && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0"
-                        onClick={() => window.open(source.url, "_blank")}
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                      </Button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Bibliography */}
-            {message.bibliography && message.bibliography.length > 0 && (
-              <Collapsible open={showBibliography} onOpenChange={setShowBibliography}>
-                <CollapsibleTrigger asChild>
-                  <Button variant="ghost" size="sm" className="h-8 text-xs">
-                    <ChevronDown
-                      className={cn("h-3 w-3 mr-1 transition-transform", showBibliography && "rotate-180")}
-                    />
-                    References ({message.bibliography.length})
-                  </Button>
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <Card className="p-3 mt-2 bg-muted/50">
-                    <h4 className="text-xs font-semibold mb-2 text-muted-foreground uppercase tracking-wide">
-                      References
-                    </h4>
-                    <div className="space-y-2">
-                      {message.bibliography.map((citation, index) => (
-                        <p key={index} className="text-xs leading-relaxed text-muted-foreground">
-                          [{index + 1}] {citation}
-                        </p>
-                      ))}
-                    </div>
-                  </Card>
-                </CollapsibleContent>
-              </Collapsible>
-            )}
-          </div>
-        )}
       </div>
 
       {message.role === "user" && (
         <div className="flex-shrink-0">
-          <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center">
-            <User className="h-4 w-4 text-secondary-foreground" />
+          <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center">
+            <User className="h-4 w-4 text-emerald-700" />
           </div>
         </div>
       )}

@@ -53,7 +53,7 @@ class Config:
     DEBUG_MODE = os.getenv("DEBUG_MODE", "true").lower() == "true"
 
     # Elasticsearch Configuration
-    ES_HOST = os.getenv("ES_HOST", "http://localhost:9200")
+    ES_HOST = os.getenv("ES_HOST", "http://103.3.247.120:9202")
     ES_INDEX_NAME = os.getenv("ES_INDEX_NAME", "papers")
 
     # BGE Embedding Configuration
@@ -74,7 +74,7 @@ class Config:
     PDF_LOCAL_DIR = os.getenv("PDF_LOCAL_DIR", "/Users/admin/code/cazoodle/data/pdfs")
 
     # MinIO / Object Storage
-    MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
+    MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "103.3.247.120:9002")
 
     # LlamaIndex Agent Configuration
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")

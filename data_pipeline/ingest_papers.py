@@ -22,17 +22,21 @@ from data_pipeline.document_chunker import DocumentChunker
 from data_pipeline.es_indexer import ESIndexer
 from data_pipeline.minio_storage import MinIOStorage
 
+from minio import Minio
+
 
 class PaperProcessor:
     def __init__(
         self,
-        es_host: str = "localhost:9200",
+        es_host: str = "103.3.247.120:9200",
         bge_model: str = "BAAI/bge-large-en-v1.5",
         chunk_size: int = 512,
         chunk_overlap: int = 100,
-        json_metadata_dir: str = "/Users/admin/code/cazoodle/data/pdfs",
-        minio_endpoint: str = "localhost:9002",
-        enable_minio: bool = True
+        json_metadata_dir: str = "papers/metadata/paper_id.jsons",
+        # minio_endpoint: str = "103.3.247.120:9002",
+        minio_bucket: str = "papers",
+        minio_prefix: str = "papers/",
+        include_images: bool = True
     ):
         """
         Initialize paper processor with all components.
@@ -49,23 +53,19 @@ class PaperProcessor:
         log.info("Initializing paper processor...")
 
         # Store configuration
-        self.json_metadata_dir = Path(json_metadata_dir)
-        self.enable_minio = enable_minio
-
+        self.json_metadata_dir = json_metadata_dir
+        self.minio_bucket = minio_bucket
+        self.minio_prefix = minio_prefix
+        self.include_images = include_images
+        self.minio = Minio(**{"endpoint": str(os.getenv("MINIO_ENDPOINT")),
+                    "access_key": str(os.getenv("MINIO_ACCESS_KEY")),
+                    "secret_key": str(os.getenv("MINIO_SECRET_KEY")),
+                    "secure": False
+                    })
         # Initialize components
         self.embedder = BGEEmbedder(model_name=bge_model)
         self.chunker = DocumentChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         self.indexer = ESIndexer(es_host=es_host, embedding_dim=self.embedder.embedding_dim)
-
-        # Initialize MinIO storage if enabled
-        self.minio_storage = None
-        if enable_minio:
-            try:
-                self.minio_storage = MinIOStorage(endpoint=minio_endpoint)
-                log.info("MinIO storage initialized")
-            except Exception as e:
-                log.warning(f"Failed to initialize MinIO storage: {e}")
-                log.warning("Continuing without MinIO storage")
 
         log.info("Paper processor initialized successfully")
 
@@ -238,7 +238,37 @@ class PaperProcessor:
 
         return metadata
 
-    def process_paper(self, markdown_path: Path) -> Optional[List[Dict]]:
+    def _load_markdown_and_metadata(self, paper_id: str, markdown_path: Optional[Path] = None) -> Optional[Dict]:
+        """Unified loader for markdown+metadata either from filesystem or MinIO."""
+        content = None
+        json_metadata = None
+        source_path = None
+        if self.from_minio and self.minio_storage:
+            content = self.minio_storage.get_markdown_object(self.minio_bucket, paper_id, base_prefix=self.minio_prefix.rstrip('/'))
+            if content is None:
+                return None
+            json_metadata = self.minio_storage.get_metadata_json(self.minio_bucket, paper_id, base_prefix=self.minio_prefix.rstrip('/')) or {}
+            source_path = f"minio://{self.minio_bucket}/{self.minio_prefix}{paper_id}/markdown/{paper_id}.md"
+        else:
+            if markdown_path is None:
+                return None
+            try:
+                content = markdown_path.read_text(encoding='utf-8')
+            except Exception as e:
+                log.error(f"Error reading {markdown_path}: {e}")
+                return None
+            json_metadata = self.load_json_metadata(markdown_path.stem, self.json_metadata_dir)
+            source_path = str(markdown_path)
+
+        paper_id_final = (json_metadata.get('paper_id') or (markdown_path.stem if markdown_path else paper_id))
+        return {
+            'paper_id': paper_id_final,
+            'content': content,
+            'json_metadata': json_metadata,
+            'source_path': source_path
+        }
+
+    def process_paper(self, markdown_path: Optional[Path]) -> Optional[List[Dict]]:
         """
         Process a single paper: extract metadata, chunk, embed, and prepare documents for indexing.
 
@@ -253,13 +283,69 @@ class PaperProcessor:
             List of documents ready for indexing (1 paper doc + N chunk docs)
         """
         try:
-            # Extract metadata
-            paper_data = self.extract_metadata_from_markdown(markdown_path)
-            if not paper_data:
-                log.error(f"Failed to extract metadata from {markdown_path}")
+            # Determine paper_id & load content/metadata
+            if self.from_minio:
+                paper_id = markdown_path  # when from_minio we pass paper_id string in place of path
+                load_result = self._load_markdown_and_metadata(paper_id)
+            else:
+                paper_id = markdown_path.stem if markdown_path else None
+                load_result = self._load_markdown_and_metadata(paper_id, markdown_path)
+
+            if not load_result:
+                log.error(f"Failed to load paper {paper_id}")
                 return None
 
-            paper_id = paper_data['paper_id']
+            content = load_result['content']
+            json_metadata = load_result['json_metadata']
+            source_path = load_result['source_path']
+
+            # Build combined metadata similar to previous extract method (simplified reuse)
+            paper_data = {
+                'paper_id': paper_id,
+                'title': json_metadata.get('title', ''),
+                'authors': json_metadata.get('authors', []),
+                'abstract': json_metadata.get('abstract', ''),
+                'categories': json_metadata.get('categories', []) or ['cs.AI'],
+                'publish_date': json_metadata.get('publish_date'),
+                'markdown_path': source_path,
+                'word_count': len(content.split()) if content else 0,
+                'has_images': '![' in content if content else False,
+                'downloaded_at': json_metadata.get('downloaded_at'),
+                'pdf_size': json_metadata.get('pdf_size', 0),
+                'content': content
+            }
+
+            # Fallback parsing for missing fields
+            if not paper_data['title'] and content:
+                title_match = re.search(r'^#\s+(.+?)$', content, re.MULTILINE)
+                if title_match:
+                    paper_data['title'] = title_match.group(1).strip()
+            if not paper_data['abstract'] and content:
+                abstract_match = re.search(r'(?:^|\n)#+\s*abstract\s*\n(.*?)(?=\n#+|\n\n|\Z)', content, re.IGNORECASE | re.DOTALL)
+                if abstract_match:
+                    paper_data['abstract'] = abstract_match.group(1).strip()
+
+            # Image enrichment (list all images for paper if requested)
+            image_urls = []
+            if self.include_images and self.minio_storage and self.from_minio:
+                img_keys = self.minio_storage.list_image_objects(self.minio_bucket, paper_id, base_prefix=self.minio_prefix.rstrip('/'))
+                for k in img_keys:
+                    image_urls.append(self.minio_storage.build_public_url(self.minio_bucket, k))
+
+            figure_captions = []
+            if image_urls and content:
+                # Capture lines starting with Figure / Fig. and inline markdown image lines
+                fig_ref_pattern = re.compile(r'^(figure|fig\.?)[\s\d:.-]{0,10}', re.IGNORECASE)
+                for line in content.splitlines():
+                    stripped = line.strip()
+                    if fig_ref_pattern.match(stripped) or stripped.startswith('!['):
+                        # Basic de-dup
+                        if stripped not in figure_captions:
+                            figure_captions.append(stripped[:500])
+
+            paper_data['image_urls'] = image_urls
+            paper_data['image_count'] = len(image_urls)
+            paper_data['figure_captions'] = figure_captions
 
             # Chunk the document
             chunked_data = self.chunker.chunk_paper(paper_data)
@@ -277,14 +363,15 @@ class PaperProcessor:
             # Handle PDF/MinIO uploads first
             minio_pdf_url = None
             minio_md_url = None
-            pdf_path = Path(str(markdown_path).replace('/processed/markdown/', '/pdfs/').replace('.md', '.pdf'))
-            if pdf_path.exists() and self.minio_storage:
-                try:
-                    minio_pdf_url = self.minio_storage.upload_pdf(paper_id, pdf_path)
-                    minio_md_url = self.minio_storage.upload_markdown(paper_id, markdown_path)
-                    log.info(f"Uploaded files to MinIO for paper: {paper_id}")
-                except Exception as e:
-                    log.warning(f"MinIO upload failed for {paper_id}: {e}")
+            if not self.from_minio:
+                pdf_path = Path(str(markdown_path).replace('/processed/markdown/', '/pdfs/').replace('.md', '.pdf')) if markdown_path else None
+                if pdf_path and pdf_path.exists() and self.minio_storage:
+                    try:
+                        minio_pdf_url = self.minio_storage.upload_pdf(paper_id, pdf_path)
+                        minio_md_url = self.minio_storage.upload_markdown(paper_id, markdown_path)
+                        log.info(f"Uploaded files to MinIO for paper: {paper_id}")
+                    except Exception as e:
+                        log.warning(f"MinIO upload failed for {paper_id}: {e}")
 
             # Create list to hold all documents
             documents = []
@@ -314,7 +401,10 @@ class PaperProcessor:
                 'minio_markdown_url': minio_md_url,
 
                 # Timestamp for tracking
-                'indexed_at': datetime.now().isoformat()
+                'indexed_at': datetime.now().isoformat(),
+                'image_urls': paper_data.get('image_urls', []),
+                'figure_captions': paper_data.get('figure_captions', []),
+                'image_count': paper_data.get('image_count', 0)
             }
             documents.append(paper_doc)
 
@@ -343,6 +433,19 @@ class PaperProcessor:
                         # Timestamp
                         'indexed_at': datetime.now().isoformat()
                     }
+                    # Attach subset of images if figure captions appear in chunk text
+                    if paper_data.get('image_urls') and paper_data.get('figure_captions'):
+                        relevant_images = []
+                        txt_lower = chunk['text'].lower()
+                        # Heuristic: map captions to images by index
+                        for idx, cap in enumerate(paper_data['figure_captions']):
+                            token = cap[:30].lower().split(' ')[0]
+                            if token and token in txt_lower and idx < len(paper_data['image_urls']):
+                                relevant_images.append(paper_data['image_urls'][idx])
+                        if not relevant_images and i == 0:
+                            relevant_images = paper_data['image_urls'][:1]
+                        if relevant_images:
+                            chunk_doc['image_urls'] = list(dict.fromkeys(relevant_images))  # dedup preserve order
                     documents.append(chunk_doc)
 
             return documents
@@ -368,13 +471,18 @@ class PaperProcessor:
             resume_from: Resume from this paper ID
         """
         # Find all markdown files
-        markdown_files = list(markdown_dir.glob("*.md"))
-        markdown_files.sort()
-
-        if max_files:
-            markdown_files = markdown_files[:max_files]
-
-        log.info(f"Found {len(markdown_files)} markdown files to process")
+        if self.from_minio and self.minio_storage:
+            paper_ids = self.minio_storage.list_paper_ids(self.minio_bucket, prefix=self.minio_prefix)
+            if max_files:
+                paper_ids = paper_ids[:max_files]
+            log.info(f"[MinIO] Found {len(paper_ids)} papers under {self.minio_prefix}")
+            markdown_files = paper_ids  # pass paper_id strings
+        else:
+            markdown_files = list(markdown_dir.glob("*.md"))
+            markdown_files.sort()
+            if max_files:
+                markdown_files = markdown_files[:max_files]
+            log.info(f"Found {len(markdown_files)} markdown files to process")
 
         # Create index
         self.indexer.create_index(force=False)
@@ -393,7 +501,7 @@ class PaperProcessor:
         batch = []
 
         for i, md_file in enumerate(tqdm(markdown_files[start_index:], desc="Processing papers")):
-            # Process single paper - now returns list of chunk documents
+            # md_file is Path in local mode, string (paper_id) in MinIO mode
             chunk_documents = self.process_paper(md_file)
 
             if chunk_documents:
@@ -496,6 +604,28 @@ def main():
         action="store_true",
         help="Disable MinIO storage"
     )
+    parser.add_argument(
+        "--from-minio",
+        action="store_true",
+        help="Ingest directly from MinIO papers/<paper_id>/ structure instead of local markdown directory"
+    )
+    parser.add_argument(
+        "--minio-bucket",
+        default="papers",
+        help="MinIO bucket containing papers/<paper_id>/ subfolders"
+    )
+    parser.add_argument(
+        "--minio-prefix",
+        default="papers/",
+        help="Prefix inside bucket where paper folders live (e.g. papers/ or data/papers/)"
+    )
+    parser.add_argument(
+        "--no-images",
+        dest="include_images",
+        action="store_false",
+        help="Do not include image URLs / captions in indexed documents"
+    )
+    parser.set_defaults(include_images=True)
 
     args = parser.parse_args()
 
@@ -512,7 +642,11 @@ def main():
         chunk_overlap=args.chunk_overlap,
         json_metadata_dir=str(args.json_metadata_dir),
         minio_endpoint=args.minio_endpoint,
-        enable_minio=not args.disable_minio
+        enable_minio=not args.disable_minio,
+        from_minio=args.from_minio,
+        minio_bucket=args.minio_bucket,
+        minio_prefix=args.minio_prefix,
+        include_images=args.include_images
     )
 
     # Start ingestion

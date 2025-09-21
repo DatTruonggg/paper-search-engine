@@ -1,33 +1,38 @@
-#!/usr/bin/env python3
-"""
-ArXiv NLP Papers Data Pipeline
-Downloads ArXiv dataset from Kaggle, explores categories, and downloads papers
-"""
-
-import os
-import json
-import pandas as pd
-import kagglehub
-from pathlib import Path
-from typing import List, Dict, Set
-from collections import Counter
-from logs import log
 import re
+import os
+import pandas as pd 
+from pathlib import Path
+from typing import List, Dict, Counter
 from datetime import datetime
+import kagglehub
+from minio import Minio
+from dotenv import load_dotenv
+from logs import log
 
+load_dotenv()
 
 class ArxivDataPipeline:
-    def __init__(self, data_dir: str = "../data"):
-        self.data_dir = Path(data_dir)
-        self.raw_dir = self.data_dir / "raw"
-        self.pdfs_dir = self.data_dir / "pdfs"
-        self.processed_dir = self.data_dir / "processed"
-        self.logs_dir = self.data_dir / "logs"
-        
-        # Create directories if they don't exist
-        for dir_path in [self.raw_dir, self.pdfs_dir, self.processed_dir, self.logs_dir]:
-            dir_path.mkdir(parents=True, exist_ok=True)
-        
+    def __init__(self):        
+        """        
+        papers/
+            <kaggle-file>.json
+            {paperId}/
+                pdf/{paperId}.pdf
+                metadata/{paperId}.json
+                markdown/index.md
+                images/
+                    fig_p{page}_{idx}_{sha16}.{ext}
+                manifest.json #TODO: consider to remove it
+        """
+        self.minio_client = Minio(**{"endpoint": str(os.getenv("MINIO_ENDPOINT")),
+                                          "access_key": str(os.getenv("MINIO_ACCESS_KEY")),
+                                          "secret_key": str(os.getenv("MINIO_SECRET_KEY")),
+                                          "secure": False
+                                        })
+        self.bucket_name = os.getenv("MINIO_BUCKET", "papers")
+        self.raw_prefix = os.getenv("MINIO_RAW_PREFIX", "raw")  # folder/prefix in bucket
+
+
         # Define NLP-related categories
         self.nlp_categories = [
             'cs.CL',    # Computation and Language (primary NLP)
@@ -107,142 +112,122 @@ class ArxivDataPipeline:
         }
         
         # Flatten all keywords for easy searching
-        self.all_nlp_keywords = []
-        for category, keywords in self.nlp_keywords.items():
+        self.all_nlp_keywords: List[str] = []
+        for _, keywords in self.nlp_keywords.items():
             self.all_nlp_keywords.extend(keywords)
-    
-    def download_dataset(self) -> str:
-        """Download ArXiv dataset from Kaggle"""
-        log.info("Downloading ArXiv dataset from Kaggle...")
+
+        # Precompile regex patterns once to avoid repeated compilation per paper.
+        # Use word boundaries; join short keywords that are simple words into a single alternation
+        # when feasible, but keep list form for clarity and potential future per-keyword stats.
+        self._keyword_patterns = [
+            re.compile(r"\b" + re.escape(kw.lower()) + r"\b", re.IGNORECASE)
+            for kw in self.all_nlp_keywords
+        ]
         
+    def download_dataset(self) -> None:
+        """
+        Download ArXiv dataset (Cornell-University/arxiv) via kagglehub and upload
+        th
+                log.info(f"{file_path}")e raw files to MinIO under the configured prefix.
+
+        Returns:
+            List of uploaded object names (with prefix) in the bucket.
+        """
+        log.info("[STORAGE] Downloading ArXiv dataset from Kaggle ...")
         try:
-            # Download latest version
-            path = kagglehub.dataset_download("Cornell-University/arxiv")
-            log.info(f"Dataset downloaded to: {path}")
-            
-            # Copy to our raw data directory
-            import shutil
-            dataset_files = list(Path(path).glob("*"))
-            for file in dataset_files:
-                dest = self.raw_dir / file.name
-                if not dest.exists():
-                    shutil.copy2(file, dest)
-                    log.info(f"Copied {file.name} to {dest}")
-            
-            return str(self.raw_dir)
-        
+            local_dir = Path(kagglehub.dataset_download("Cornell-University/arxiv"))
+            log.info(f"[STORAGE] Dataset downloaded locally at: {local_dir}")
+            for file_path in sorted(local_dir.glob('*')):
+                if not file_path.is_file():
+                    continue
+                log.info(f"[STORAGE] Uploading {file_path}")
+                fp = Path(file_path)
+                try:
+                    with fp.open("rb") as f:
+                        self.minio_client.put_object(
+                            bucket_name=self.bucket_name,
+                            object_name=f"{fp.name}",
+                            data=f,
+                            length=fp.stat().st_size,
+                            content_type="application/json"
+                        )
+                except Exception as ue:
+                    log.error(f"[STORAGE] Failed uploading {file_path.name}: {ue}")
+                    raise
+                
         except Exception as e:
-            log.error(f"Failed to download dataset: {e}")
+            log.error(f"[STORAGE] Download+upload failed: {e}")
             raise
-    
-    def load_metadata(self) -> pd.DataFrame:
-        """Load ArXiv metadata from downloaded dataset"""
-        json_file = self.raw_dir / "arxiv-metadata-oai-snapshot.json"
+
+    # def explore_categories(self, df: pd.DataFrame) -> Dict:
+    #     """Explore and analyze all categories in the dataset"""
+    #     log.info("Exploring ArXiv categories...")
         
-        if not json_file.exists():
-            log.warning(f"Metadata file not found at {json_file}")
-            # Try to find any JSON file
-            json_files = list(self.raw_dir.glob("*.json"))
-            if json_files:
-                json_file = json_files[0]
-                log.info(f"Using metadata file: {json_file}")
-            else:
-                raise FileNotFoundError("No metadata JSON file found in raw data directory")
+    #     # Extract all categories
+    #     all_categories = []
+    #     for categories_str in df['categories'].dropna():
+    #         # Categories are space-separated
+    #         categories = categories_str.split()
+    #         all_categories.extend(categories)
         
-        log.info(f"Loading metadata from {json_file}")
+    #     # Count category frequencies
+    #     category_counts = Counter(all_categories)
         
-        # Load JSON lines file
-        papers = []
-        with open(json_file, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f):
-                if line_num % 100000 == 0:
-                    log.info(f"Loaded {line_num} papers...")
-                
-                if line.strip():  # Skip empty lines
-                    try:
-                        paper = json.loads(line)
-                        papers.append(paper)
-                    except json.JSONDecodeError as e:
-                        log.warning(f"Error parsing line {line_num}: {e}")
-                
-                # For initial exploration, limit to first 500k papers
-                if line_num >= 500000:
-                    log.info("Loaded first 500,000 papers for exploration")
-                    break
+    #     # Separate by main category prefix
+    #     main_categories = {}
+    #     for cat, count in category_counts.items():
+    #         main_cat = cat.split('.')[0] if '.' in cat else cat
+    #         if main_cat not in main_categories:
+    #             main_categories[main_cat] = {}
+    #         main_categories[main_cat][cat] = count
         
-        log.info(f"Total papers loaded: {len(papers)}")
-        df = pd.DataFrame(papers)
-        return df
-    
-    def explore_categories(self, df: pd.DataFrame) -> Dict:
-        """Explore and analyze all categories in the dataset"""
-        log.info("Exploring ArXiv categories...")
+    #     # Sort categories
+    #     sorted_categories = dict(sorted(category_counts.items(), key=lambda x: x[1], reverse=True))
         
-        # Extract all categories
-        all_categories = []
-        for categories_str in df['categories'].dropna():
-            # Categories are space-separated
-            categories = categories_str.split()
-            all_categories.extend(categories)
+    #     # Print analysis
+    #     log.info(f"\n{'='*60}")
+    #     log.info(f"ARXIV CATEGORIES ANALYSIS")
+    #     log.info(f"{'='*60}")
+    #     log.info(f"Total unique categories: {len(category_counts)}")
+    #     log.info(f"Total category assignments: {sum(category_counts.values())}")
         
-        # Count category frequencies
-        category_counts = Counter(all_categories)
+    #     log.info(f"\n{'='*60}")
+    #     log.info("TOP 50 CATEGORIES BY FREQUENCY:")
+    #     log.info(f"{'='*60}")
+    #     for i, (cat, count) in enumerate(list(sorted_categories.items())[:50], 1):
+    #         log.info(f"{i:3}. {cat:20} : {count:8,} papers")
         
-        # Separate by main category prefix
-        main_categories = {}
-        for cat, count in category_counts.items():
-            main_cat = cat.split('.')[0] if '.' in cat else cat
-            if main_cat not in main_categories:
-                main_categories[main_cat] = {}
-            main_categories[main_cat][cat] = count
+    #     # Identify NLP-related categories
+    #     nlp_keywords = ['cl', 'lg', 'ai', 'ir', 'ml', 'computational', 'language', 
+    #                    'information', 'retrieval', 'learning', 'intelligence']
         
-        # Sort categories
-        sorted_categories = dict(sorted(category_counts.items(), key=lambda x: x[1], reverse=True))
+    #     potential_nlp_categories = []
+    #     for cat in category_counts:
+    #         cat_lower = cat.lower()
+    #         if any(keyword in cat_lower for keyword in nlp_keywords):
+    #             potential_nlp_categories.append((cat, category_counts[cat]))
         
-        # Print analysis
-        log.info(f"\n{'='*60}")
-        log.info(f"ARXIV CATEGORIES ANALYSIS")
-        log.info(f"{'='*60}")
-        log.info(f"Total unique categories: {len(category_counts)}")
-        log.info(f"Total category assignments: {sum(category_counts.values())}")
+    #     log.info(f"\n{'='*60}")
+    #     log.info("POTENTIAL NLP-RELATED CATEGORIES:")
+    #     log.info(f"{'='*60}")
+    #     for cat, count in sorted(potential_nlp_categories, key=lambda x: x[1], reverse=True):
+    #         log.info(f"{cat:20} : {count:8,} papers")
         
-        log.info(f"\n{'='*60}")
-        log.info("TOP 50 CATEGORIES BY FREQUENCY:")
-        log.info(f"{'='*60}")
-        for i, (cat, count) in enumerate(list(sorted_categories.items())[:50], 1):
-            log.info(f"{i:3}. {cat:20} : {count:8,} papers")
+    #     # Save category analysis to file
+    #     analysis_file = self.logs_dir / f"category_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    #     analysis_data = {
+    #         "total_categories": len(category_counts),
+    #         "total_assignments": sum(category_counts.values()),
+    #         "all_categories": sorted_categories,
+    #         "main_categories": main_categories,
+    #         "potential_nlp_categories": dict(potential_nlp_categories)
+    #     }
         
-        # Identify NLP-related categories
-        nlp_keywords = ['cl', 'lg', 'ai', 'ir', 'ml', 'computational', 'language', 
-                       'information', 'retrieval', 'learning', 'intelligence']
+    #     with open(analysis_file, 'w') as f:
+    #         json.dump(analysis_data, f, indent=2)
+    #     log.info(f"\nCategory analysis saved to: {analysis_file}")
         
-        potential_nlp_categories = []
-        for cat in category_counts:
-            cat_lower = cat.lower()
-            if any(keyword in cat_lower for keyword in nlp_keywords):
-                potential_nlp_categories.append((cat, category_counts[cat]))
-        
-        log.info(f"\n{'='*60}")
-        log.info("POTENTIAL NLP-RELATED CATEGORIES:")
-        log.info(f"{'='*60}")
-        for cat, count in sorted(potential_nlp_categories, key=lambda x: x[1], reverse=True):
-            log.info(f"{cat:20} : {count:8,} papers")
-        
-        # Save category analysis to file
-        analysis_file = self.logs_dir / f"category_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        analysis_data = {
-            "total_categories": len(category_counts),
-            "total_assignments": sum(category_counts.values()),
-            "all_categories": sorted_categories,
-            "main_categories": main_categories,
-            "potential_nlp_categories": dict(potential_nlp_categories)
-        }
-        
-        with open(analysis_file, 'w') as f:
-            json.dump(analysis_data, f, indent=2)
-        log.info(f"\nCategory analysis saved to: {analysis_file}")
-        
-        return analysis_data
+    #     return analysis_data
     
     def filter_nlp_papers(self, df: pd.DataFrame, categories: List[str]) -> pd.DataFrame:
         """Filter papers by specified categories"""
@@ -286,16 +271,6 @@ class ArxivDataPipeline:
                                   use_keywords: bool = True,
                                   min_keyword_matches: int = 1,
                                   target_papers: int = 1000) -> pd.DataFrame:
-        """
-        Advanced filtering combining categories and keywords with early stopping
-        
-        Args:
-            df: Input dataframe
-            use_categories: Whether to filter by NLP categories
-            use_keywords: Whether to filter by keywords in title/abstract
-            min_keyword_matches: Minimum number of keyword matches required
-            target_papers: Stop filtering after finding this many papers (default 1000)
-        """
         log.info("Starting advanced NLP paper filtering with early stopping...")
         original_count = len(df)
         
@@ -324,10 +299,12 @@ class ArxivDataPipeline:
         # Step 3: Sort by date (newest first)
         df = df.sort_values('sort_date', ascending=False, na_position='last')
         log.info(f"Sorted papers by date (newest first)")
-        
+
         # Step 4: Apply keyword filtering incrementally until we have enough papers
-        filtered_papers = []
-        
+        # Memory optimization: keep only row indices + keyword info instead of copying entire row dicts.
+        matched_indices: List[int] = []
+        matched_keywords_map: Dict[int, List[str]] = {}
+
         if use_keywords:
             log.info(f"Applying keyword filtering incrementally (target: {target_papers} papers)...")
             
@@ -335,7 +312,7 @@ class ArxivDataPipeline:
             total_processed = 0
             
             for start_idx in range(0, len(df), batch_size):
-                if len(filtered_papers) >= target_papers:
+                if len(matched_indices) >= target_papers:
                     break
                     
                 end_idx = min(start_idx + batch_size, len(df))
@@ -344,34 +321,28 @@ class ArxivDataPipeline:
                 
                 # Check keywords for this batch
                 for idx, row in batch_df.iterrows():
-                    # Check title
                     title_has_kw, title_keywords = self.contains_nlp_keywords(row['title'])
-                    # Check abstract
                     abstract_has_kw, abstract_keywords = self.contains_nlp_keywords(row['abstract'])
-                    
-                    # Combine keywords
+                    if not (title_has_kw or abstract_has_kw):
+                        continue
                     all_keywords = list(set(title_keywords + abstract_keywords))
-                    
-                    # Check if paper passes
                     if len(all_keywords) >= min_keyword_matches:
-                        paper_dict = row.to_dict()
-                        paper_dict['matched_nlp_keywords'] = all_keywords
-                        paper_dict['keyword_match_count'] = len(all_keywords)
-                        filtered_papers.append(paper_dict)
-                        
-                        if len(filtered_papers) >= target_papers:
+                        matched_indices.append(idx)
+                        matched_keywords_map[idx] = all_keywords
+                        if len(matched_indices) >= target_papers:
                             log.info(f"Reached target of {target_papers} papers after processing {total_processed:,} papers")
                             break
                 
                 if total_processed % 10000 == 0:
-                    log.info(f"Processed {total_processed:,} papers, found {len(filtered_papers)} matching papers so far...")
+                    log.info(f"Processed {total_processed:,} papers, found {len(matched_indices)} matching papers so far...")
             
-            # Create dataframe from filtered papers
-            if filtered_papers:
-                filtered_df = pd.DataFrame(filtered_papers)
+            if matched_indices:
+                filtered_df = df.loc[matched_indices].copy()
+                # Attach keyword columns
+                filtered_df['matched_nlp_keywords'] = [matched_keywords_map[i] for i in matched_indices]
+                filtered_df['keyword_match_count'] = filtered_df['matched_nlp_keywords'].apply(len)
             else:
                 filtered_df = pd.DataFrame()
-                
             log.info(f"After keyword filtering: {len(filtered_df):,} papers (processed {total_processed:,} papers)")
         else:
             # No keyword filtering, just take top papers by date
@@ -495,52 +466,3 @@ class ArxivDataPipeline:
                 log.info(f"  {year}: {count} papers")
         
         return stats
-
-
-def main():
-    """Main execution function"""
-    pipeline = ArxivDataPipeline()
-    
-    # Step 1: Download dataset
-    try:
-        dataset_path = pipeline.download_dataset()
-        log.info(f"Dataset available at: {dataset_path}")
-    except Exception as e:
-        log.error(f"Failed to download dataset: {e}")
-        return
-    
-    # Step 2: Load metadata
-    try:
-        df = pipeline.load_metadata()
-        log.info(f"Loaded {len(df)} papers from metadata")
-        log.info(f"Columns: {df.columns.tolist()}")
-    except Exception as e:
-        log.error(f"Failed to load metadata: {e}")
-        return
-    
-    # Step 3: Explore categories
-    category_analysis = pipeline.explore_categories(df)
-    
-    # Step 4: Show sample papers to understand structure
-    log.info(f"\n{'='*60}")
-    log.info("SAMPLE PAPER STRUCTURE:")
-    log.info(f"{'='*60}")
-    if len(df) > 0:
-        sample_paper = df.iloc[0].to_dict()
-        for key, value in sample_paper.items():
-            if isinstance(value, str) and len(value) > 200:
-                value = value[:200] + "..."
-            log.info(f"{key}: {value}")
-    
-    log.info("\n" + "="*60)
-    log.info("NEXT STEPS:")
-    log.info("="*60)
-    log.info("1. Review the categories above to select NLP-related ones")
-    log.info("2. Use filter_nlp_papers() with selected categories")
-    log.info("3. Download PDFs for filtered papers")
-    log.info("4. Convert PDFs to text format")
-    log.info("5. Prepare for Elasticsearch ingestion")
-
-
-if __name__ == "__main__":
-    main()

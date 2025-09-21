@@ -9,8 +9,10 @@ import {
   type QAMode,
 } from "@/components/main-search-interface"
 import { PaperResultsPanel, type PaperResult } from "@/components/paper-results-panel"
-import { Menu, X, Search, MessageSquare, ArrowLeft } from "lucide-react"
-import { ResearchService } from "@/lib/research-service"
+import { ChatMessage, type MessageWithCitations } from "@/components/chat-message"
+import { Input } from "@/components/ui/input"
+import { Menu, X, Search, MessageSquare, ArrowLeft, Bot } from "lucide-react"
+import { ResearchService, type QAResponse } from "@/lib/research-service"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
 
@@ -31,6 +33,10 @@ export default function QAPage() {
   const [lastQuestion, setLastQuestion] = useState<string>("")
   const [selectedPapers, setSelectedPapers] = useState<Set<string>>(new Set())
   const [lastContextId, setLastContextId] = useState<string | null>(null)
+  const [qaResult, setQaResult] = useState<QAResponse | null>(null)
+  const [qaError, setQaError] = useState<string | null>(null)
+  const [messages, setMessages] = useState<MessageWithCitations[]>([])
+  const [chatInput, setChatInput] = useState<string>("")
   const api = useMemo(() => new ResearchService(), [])
 
   useEffect(() => {
@@ -74,13 +80,19 @@ export default function QAPage() {
     setSessions((prev) => [newSession, ...prev])
     setCurrentSessionId(newSession.id)
     setSidebarOpen(false)
+    // Reset conversation state to show the first QA screen
+    setMessages([])
+    setChatInput("")
+    setQaResult(null)
+    setQaError(null)
+    setLastQuestion("")
+    setSelectedPapers(new Set())
   }
 
   const handleSessionSelect = (sessionId: string) => {
     setCurrentSessionId(sessionId)
     setSidebarOpen(false)
   }
-
   const handleDeleteSession = (sessionId: string) => {
     setSessions((prev) => prev.filter((s) => s.id !== sessionId))
     if (currentSessionId === sessionId) {
@@ -94,18 +106,80 @@ export default function QAPage() {
     setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, title: newTitle } : s)))
   }
 
-  // QA submission: if single-paper and none selected -> disabled by component; if all-papers -> use contextId
+  // Làm sạch answer: loại bỏ tham chiếu (Chunk x, Figure y, ...)
+  const cleanAnswerText = (text: string): string => {
+    if (!text) return text
+    let out = text
+    // Xóa các ngoặc đơn chỉ chứa tham chiếu Chunk/Figure/Table/Image (có thể nhiều mục, cách nhau bởi dấu phẩy)
+    out = out.replace(/\s*\((?:\s*(?:Chunk\s*\d+|Figure\s*\d+|Fig\.?\s*\d+|Table\s*\d+|Image\s*\d+))(?:\s*,\s*(?:Chunk\s*\d+|Figure\s*\d+|Fig\.?\s*\d+|Table\s*\d+|Image\s*\d+))*\)\s*/gi, ' ')
+    // Thu gọn khoảng trắng thừa
+    out = out.replace(/\s{2,}/g, ' ')
+    // Xóa khoảng trắng trước dấu câu
+    out = out.replace(/\s+([.,;:!?])/g, '$1')
+    return out.trim()
+  }
+
+  // Helper: map QAResponse -> Assistant Chat Message
+  const mapQAtoAssistant = (resp: QAResponse): MessageWithCitations => {
+    const sources = (resp.sources || []).map((s: any, idx: number) => ({
+      id: (s?.paper_id || s?.chunk_index || String(idx)).toString(),
+      title: s?.title || s?.section_path || s?.paper_id || `Source ${idx + 1}`,
+      authors: Array.isArray(s?.authors) ? s.authors : [],
+      url: s?.url || s?.minio_pdf_url,
+      type: "paper" as const,
+    }))
+    return {
+      id: `assistant_${Date.now()}`,
+      role: "assistant",
+      content: cleanAnswerText(resp.answer),
+      timestamp: new Date(),
+      sources,
+    }
+  }
+
+  // Send QA question using selected papers (or all current results for multi mode)
   const handleAsk = async (question: string, _filters?: SearchFilters, qaMode?: QAMode) => {
     setIsLoading(true)
     setLastQuestion(question)
+    setQaError(null)
     try {
+      const selectedIds = Array.from(selectedPapers)
+      // Log payload and quick metadata for debugging backend errors like `'paper_title'`
+      const selectedMeta = selectedIds.map((id) => {
+        const p = searchResults.find((x) => x.id === id)
+        return { id, title: p?.title }
+      })
+      console.log('[QA] ask:start', { mode: qaMode || 'qa', question, selectedIds, selectedMeta })
+      const userMsg: MessageWithCitations = {
+        id: `user_${Date.now()}`,
+        role: "user",
+        content: question,
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, userMsg])
       if (qaMode === "single-paper") {
-        const paperIds = Array.from(selectedPapers)
-        if (paperIds.length === 0) return
-        await api.qaSelected({ question, paperIds, citationStyle: "APA" })
+        if (selectedIds.length === 0) return
+        const firstOnly = [selectedIds[0]]
+        console.log('[QA] POST /api/v1/qa/(single|multi)-paper payload', { paper_ids: selectedIds, count: selectedIds.length, question })
+        const resp = await api.qaSelected({ question, paperIds: selectedIds, citationStyle: "APA" })
+        console.log('[QA] response', {
+          confidence: Math.round((resp.confidenceScore || 0) * 100),
+          chunks: resp.contextChunksCount,
+          papersInvolved: resp.papersInvolved,
+        })
+        setMessages((prev) => [...prev, mapQAtoAssistant(resp)])
       } else {
-        if (!lastContextId) throw new Error("No search context available. Perform a search first.")
-        await api.qaAll({ question, searchContextId: lastContextId, citationStyle: "APA" })
+        // multi-paper: dùng danh sách chọn; nếu rỗng, fallback toàn bộ kết quả hiện có
+        const ids = selectedIds.length > 0 ? selectedIds : searchResults.map(p => p.id)
+        if (ids.length === 0) throw new Error("No papers available for multi-paper QA")
+        console.log('[QA] POST /api/v1/qa/multi-paper payload', { paper_ids: ids, count: ids.length, question })
+        const resp = await api.qaSelected({ question, paperIds: ids, citationStyle: "APA" })
+        console.log('[QA] response', {
+          confidence: Math.round((resp.confidenceScore || 0) * 100),
+          chunks: resp.contextChunksCount,
+          papersInvolved: resp.papersInvolved,
+        })
+        setMessages((prev) => [...prev, mapQAtoAssistant(resp)])
       }
 
       if (currentSession) {
@@ -118,7 +192,44 @@ export default function QAPage() {
         )
       }
     } catch (e) {
-      console.error("[qa] error:", e)
+      console.error("[QA] error", e)
+      setQaError((e as Error)?.message || "Unknown error")
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // Chat follow-up messages after the first answer
+  const handleChatSend = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault()
+    const text = chatInput.trim()
+    if (!text || isLoading) return
+    setIsLoading(true)
+    setQaError(null)
+    const userMsg: MessageWithCitations = {
+      id: `user_${Date.now()}`,
+      role: "user",
+      content: text,
+      timestamp: new Date(),
+    }
+    setMessages((prev) => [...prev, userMsg])
+    setChatInput("")
+    try {
+      const ids = Array.from(selectedPapers)
+      const paperIds = ids.length > 0 ? ids : searchResults.map(p => p.id)
+      if (paperIds.length === 0) throw new Error("No papers available for QA")
+      const meta = paperIds.map((id) => ({ id, title: searchResults.find(x => x.id === id)?.title }))
+      console.log('[QA] chat:start', { question: text, paperIds, meta })
+      const resp = await api.qaSelected({ question: text, paperIds, citationStyle: "APA" })
+      console.log('[QA] chat:response', {
+        confidence: Math.round((resp.confidenceScore || 0) * 100),
+        chunks: resp.contextChunksCount,
+        papersInvolved: resp.papersInvolved,
+      })
+      setMessages((prev) => [...prev, mapQAtoAssistant(resp)])
+    } catch (e) {
+      console.error('[QA] chat:error', e)
+      setQaError((e as Error)?.message || "Unknown error")
     } finally {
       setIsLoading(false)
     }
@@ -135,6 +246,31 @@ export default function QAPage() {
         JSON.stringify({ ...base, selectedIds: Array.from(newSelection) }),
       )
     } catch {}
+
+    // Fetch authoritative metadata for selected papers (batch endpoint).
+    // This ensures we have updated title/abstract/links before QA ask.
+    ;(async () => {
+      if (newSelection.size === 0) return
+      try {
+        const { papers: batchPapers } = await api.fetchPapersBatch(Array.from(newSelection))
+        if (!batchPapers.length) return
+        setSearchResults(prev => {
+          const byId = new Map(prev.map(p => [p.id, p]))
+            batchPapers.forEach(bp => {
+              const existing = byId.get(bp.id)
+              if (existing) {
+                // Merge keeping any UI state like bookmark
+                byId.set(bp.id, { ...existing, ...bp, isBookmarked: existing.isBookmarked })
+              } else {
+                byId.set(bp.id, bp)
+              }
+            })
+          return Array.from(byId.values())
+        })
+      } catch (e) {
+        console.error('[qa] batch metadata fetch failed', e)
+      }
+    })()
   }
 
   const handleBookmarkToggle = async (paperId: string) => {
@@ -162,38 +298,38 @@ export default function QAPage() {
         className={`
         fixed lg:static inset-y-0 left-0 z-50 w-80
         bg-gradient-to-br from-slate-50 via-white to-slate-100
-        border-r-2 border-gradient-to-b from-purple-200 via-blue-200 to-indigo-200
-        shadow-2xl shadow-purple-100/50
+        border-r-2 border-gradient-to-b from-green-200 via-emerald-200 to-green-300
+        shadow-2xl shadow-green-100/50
         transform transition-all duration-300 ease-in-out lg:transform-none
         ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}
       `}
       >
         {/* Mobile Header */}
-        <div className="flex items-center justify-between p-6 border-b-2 border-gradient-to-r from-purple-200 via-blue-200 to-indigo-200 lg:hidden bg-gradient-to-r from-purple-50 via-blue-50 to-indigo-50 backdrop-blur-sm">
+        <div className="flex items-center justify-between p-6 border-b-2 border-gradient-to-r from-green-200 via-emerald-200 to-green-300 lg:hidden bg-gradient-to-r from-green-50 via-emerald-50 to-green-50 backdrop-blur-sm">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-xl flex items-center justify-center shadow-lg">
+            <div className="w-8 h-8 bg-gradient-to-br from-green-500 to-emerald-500 rounded-xl flex items-center justify-center shadow-lg">
               <span className="text-white font-bold text-sm">💬</span>
             </div>
-            <h2 className="text-xl font-extrabold bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">Chat QA</h2>
+            <h2 className="text-xl font-extrabold bg-gradient-to-r from-green-600 via-emerald-600 to-green-700 bg-clip-text text-transparent">Chat QA</h2>
           </div>
           <Button
             variant="ghost"
             size="sm"
             onClick={() => setSidebarOpen(false)}
-            className="hover:bg-gradient-to-r hover:from-purple-100 hover:to-blue-100 transition-all duration-300 rounded-xl border border-purple-200"
+            className="hover:bg-gradient-to-r hover:from-green-100 hover:to-emerald-100 transition-all duration-300 rounded-xl border border-green-200"
           >
-            <X className="h-5 w-5 text-purple-600" />
+            <X className="h-5 w-5 text-green-600" />
           </Button>
         </div>
 
         {/* Sidebar Content */}
         <div className="p-6 space-y-6 h-full overflow-y-auto">
           {/* Welcome Section */}
-          <div className="text-center pb-4 border-b border-gradient-to-r from-purple-100 to-blue-100">
-            <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 rounded-2xl flex items-center justify-center shadow-2xl rotate-3 hover:rotate-0 transition-transform duration-500">
+          <div className="text-center pb-4 border-b border-gradient-to-r from-green-100 to-emerald-100">
+            <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-br from-green-500 via-emerald-500 to-green-600 rounded-2xl flex items-center justify-center shadow-2xl rotate-3 hover:rotate-0 transition-transform duration-500">
               <span className="text-3xl">💬</span>
             </div>
-            <h3 className="text-lg font-bold bg-gradient-to-r from-indigo-700 via-purple-700 to-pink-700 bg-clip-text text-transparent">QA Assistant</h3>
+            <h3 className="text-lg font-bold bg-gradient-to-r from-green-700 via-emerald-700 to-green-800 bg-clip-text text-transparent">QA Assistant</h3>
             <p className="text-xs text-slate-600 mt-1">Ask questions about papers</p>
           </div>
 
@@ -209,15 +345,15 @@ export default function QAPage() {
           </Button>
 
           {/* Session Management */}
-          <div className="bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 border-2 border-blue-200 rounded-2xl p-4 shadow-xl hover:shadow-blue-200/50 transition-all duration-300">
+          <div className="bg-gradient-to-br from-green-50 via-emerald-50 to-green-50 border-2 border-green-200 rounded-2xl p-4 shadow-xl hover:shadow-green-200/50 transition-all duration-300">
             <div className="flex items-center gap-3 mb-3">
-              <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-indigo-500 rounded-xl flex items-center justify-center shadow-lg">
+              <div className="w-8 h-8 bg-gradient-to-br from-green-500 to-emerald-500 rounded-xl flex items-center justify-center shadow-lg">
                 <span className="text-white text-sm">📝</span>
               </div>
-              <span className="text-base font-bold bg-gradient-to-r from-blue-700 to-indigo-700 bg-clip-text text-transparent">Current Session</span>
+              <span className="text-base font-bold bg-gradient-to-r from-green-700 to-emerald-700 bg-clip-text text-transparent">Current Session</span>
             </div>
-            <div className="bg-white/70 rounded-xl p-3 border border-blue-200/50">
-              <p className="text-sm font-semibold text-blue-800">{currentSession?.title || "QA Session"}</p>
+            <div className="bg-white/70 rounded-xl p-3 border border-green-200/50">
+              <p className="text-sm font-semibold text-green-800">{currentSession?.title || "QA Session"}</p>
               <div className="flex justify-between items-center mt-2 text-xs text-slate-600">
                 <span>Messages: {currentSession?.messageCount || 0}</span>
                 <span>Papers: {searchResults.length}</span>
@@ -225,28 +361,28 @@ export default function QAPage() {
             </div>
             <Button
               onClick={handleNewSession}
-              className="w-full mt-3 bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white shadow-lg rounded-xl font-semibold text-sm transition-all duration-300"
+              className="w-full mt-3 bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white shadow-lg rounded-xl font-semibold text-sm transition-all duration-300"
             >
               ✨ New Session
             </Button>
           </div>
 
           {/* Paper Context Info */}
-          <div className="bg-gradient-to-br from-amber-50 via-orange-50 to-red-50 border-2 border-amber-200 rounded-2xl p-4 shadow-xl">
+          <div className="bg-gradient-to-br from-green-50 via-emerald-50 to-green-50 border-2 border-green-200 rounded-2xl p-4 shadow-xl">
             <div className="flex items-center gap-3 mb-2">
-              <div className="w-8 h-8 bg-gradient-to-br from-amber-500 to-orange-500 rounded-xl flex items-center justify-center shadow-lg">
+              <div className="w-8 h-8 bg-gradient-to-br from-green-500 to-emerald-500 rounded-xl flex items-center justify-center shadow-lg">
                 <span className="text-white text-sm">📊</span>
               </div>
-              <span className="text-base font-bold bg-gradient-to-r from-amber-700 to-orange-700 bg-clip-text text-transparent">Paper Context</span>
+              <span className="text-base font-bold bg-gradient-to-r from-green-700 to-emerald-700 bg-clip-text text-transparent">Paper Context</span>
             </div>
             <div className="space-y-2 text-xs">
               <div className="flex justify-between items-center">
                 <span className="text-slate-600">Available Papers:</span>
-                <span className="font-bold text-amber-700">{searchResults.length}</span>
+                <span className="font-bold text-green-700">{searchResults.length}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-600">Selected:</span>
-                <span className="font-bold text-amber-700">{selectedPapers.size}</span>
+                <span className="font-bold text-green-700">{selectedPapers.size}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-600">Context:</span>
@@ -263,12 +399,12 @@ export default function QAPage() {
           </div>
 
           {/* QA Tips */}
-          <div className="bg-gradient-to-br from-violet-50 via-fuchsia-50 to-pink-50 border-2 border-violet-200 rounded-2xl p-4 shadow-xl">
+          <div className="bg-gradient-to-br from-green-50 via-emerald-50 to-green-50 border-2 border-green-200 rounded-2xl p-4 shadow-xl">
             <div className="flex items-center gap-3 mb-3">
-              <div className="w-8 h-8 bg-gradient-to-br from-violet-500 to-pink-500 rounded-xl flex items-center justify-center shadow-lg">
+              <div className="w-8 h-8 bg-gradient-to-br from-green-500 to-emerald-500 rounded-xl flex items-center justify-center shadow-lg">
                 <span className="text-white text-sm">💡</span>
               </div>
-              <span className="text-base font-bold bg-gradient-to-r from-violet-700 to-pink-700 bg-clip-text text-transparent">QA Tips</span>
+              <span className="text-base font-bold bg-gradient-to-r from-green-700 to-emerald-700 bg-clip-text text-transparent">QA Tips</span>
             </div>
             <div className="space-y-2 text-xs text-slate-700">
               <p>• Ask specific questions about the research</p>
@@ -290,16 +426,64 @@ export default function QAPage() {
         </div>
 
         <div className="flex-1 min-w-0">
-          <MainSearchInterface
-            mode="qa"
-            forceMode="qa"
-            hideModeSelector
-            onModeChange={() => {}}
-            onSearch={handleAsk}
-            isLoading={isLoading}
-            selectedPapers={selectedPapers}
-            totalPapers={searchResults.length}
-          />
+          {/* Nếu chưa có hội thoại, hiển thị ô hỏi ban đầu; sau đó chuyển sang chat UI */}
+          {messages.length === 0 ? (
+            <>
+              {qaError && (
+                <div className="m-4 p-3 rounded-lg border border-red-200 bg-red-50 text-red-700 text-sm">{qaError}</div>
+              )}
+              <MainSearchInterface
+                mode="qa"
+                forceMode="qa"
+                hideModeSelector
+                onModeChange={() => {}}
+                onSearch={handleAsk}
+                isLoading={isLoading}
+                selectedPapers={selectedPapers}
+                totalPapers={searchResults.length}
+              />
+            </>
+          ) : (
+            <div className="flex h-full flex-col">
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                {messages.map((m) => (
+                  <ChatMessage key={m.id} message={m} />
+                ))}
+                {isLoading && (
+                  <div className="flex gap-3 justify-start">
+                    <div className="flex-shrink-0">
+                      <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center">
+                        <Bot className="h-4 w-4 text-primary-foreground" />
+                      </div>
+                    </div>
+                    <div className="max-w-[80%]">
+                      <div className="p-4 bg-card text-card-foreground rounded-md border border-border">
+                        <div className="flex items-center gap-1 h-4" aria-label="Thinking...">
+                          <span className="w-2 h-2 rounded-full bg-muted-foreground/60 animate-bounce" style={{ animationDelay: '0ms' }} />
+                          <span className="w-2 h-2 rounded-full bg-muted-foreground/60 animate-bounce" style={{ animationDelay: '150ms' }} />
+                          <span className="w-2 h-2 rounded-full bg-muted-foreground/60 animate-bounce" style={{ animationDelay: '300ms' }} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+              {qaError && (
+                <div className="mx-4 mb-2 p-2 rounded border border-red-200 bg-red-50 text-red-700 text-xs">{qaError}</div>
+              )}
+              <form onSubmit={handleChatSend} className="p-4 border-t border-border flex gap-2">
+                <Input
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="Type your next question..."
+                  disabled={isLoading}
+                />
+                <Button type="submit" disabled={!chatInput.trim() || isLoading}>
+                  Send
+                </Button>
+              </form>
+            </div>
+          )}
         </div>
 
         <div className="w-full lg:w-96 border-t lg:border-t-0 lg:border-l border-border">

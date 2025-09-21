@@ -1,42 +1,36 @@
-#!/usr/bin/env python3
-"""
-ArXiv PDF Downloader with async support
-Downloads PDFs from ArXiv based on paper IDs
-"""
 
 import os
 import asyncio
 import aiohttp
 import json
+import io
 from logs import log
 from pathlib import Path
-from typing import List, Dict, Optional
-from datetime import datetime
-import time
-from tqdm.asyncio import tqdm
+from typing import List, Dict
+from datetime import datetime, timedelta
+from tqdm import tqdm
+from minio import Minio
+from minio.error import S3Error
 
 class ArxivPDFDownloader:
     def __init__(self, 
-                 pdfs_dir: str = "../data/pdfs",
                  max_concurrent: int = 10,
                  retry_attempts: int = 3,
                  delay_between_requests: float = 0.5):
-        """
-        Initialize PDF downloader
-        
-        Args:
-            pdfs_dir: Directory to save PDFs
-            max_concurrent: Maximum concurrent downloads
-            retry_attempts: Number of retry attempts for failed downloads
-            delay_between_requests: Delay between requests to avoid rate limiting
-        """
-        self.pdfs_dir = Path(pdfs_dir)
-        self.pdfs_dir.mkdir(parents=True, exist_ok=True)
         self.max_concurrent = max_concurrent
         self.retry_attempts = retry_attempts
         self.delay_between_requests = delay_between_requests
         self.semaphore = asyncio.Semaphore(max_concurrent)
-        
+        self.max_pdf_bytes = None  # type: int | None
+
+        self.minio_client = Minio(**{"endpoint": str(os.getenv("MINIO_ENDPOINT")),
+                                          "access_key": str(os.getenv("MINIO_ACCESS_KEY")),
+                                          "secret_key": str(os.getenv("MINIO_SECRET_KEY")),
+                                          "secure": False
+                                        })
+        self.bucket_name = str(os.getenv("MINIO_BUCKET"))
+
+
         # Track download statistics
         self.stats = {
             "total": 0,
@@ -62,224 +56,197 @@ class ArxivPDFDownloader:
         clean_id = self.extract_arxiv_id(paper_id)
         return f"https://arxiv.org/pdf/{clean_id}.pdf"
     
-    def get_pdf_path(self, paper_id: str) -> Path:
+    def get_pdf_path(self, paper_id: str):
         """Get local path for PDF file"""
         clean_id = self.extract_arxiv_id(paper_id).replace('/', '_')
-        return self.pdfs_dir / f"{clean_id}.pdf"
-    
-    async def download_pdf(self, 
-                          session: aiohttp.ClientSession, 
-                          paper_id: str,
-                          metadata: Optional[Dict] = None) -> Dict:
-        """
-        Download a single PDF
-        
-        Args:
-            session: aiohttp session
-            paper_id: ArXiv paper ID
-            metadata: Optional metadata about the paper
-            
-        Returns:
-            Dict with download result
-        """
+        return clean_id, f"{clean_id}.pdf"
+
+    def _object_exists(self, object_name: str) -> bool:
+        try:
+            self.minio_client.stat_object(self.bucket_name, object_name)
+            return True
+        except S3Error as e:
+            if e.code in ("NoSuchKey", "NoSuchBucket", "NotFound"):
+                return False
+            log.warning(f"[STORAGE] stat_object unexpected error {object_name}: {e}")
+            return False
+        except Exception as e:
+            log.warning(f"[STORAGE] stat_object generic error {object_name}: {e}")
+            return False
+
+    async def download_pdf(self,
+                           paper_id: str,
+                           metadata: dict | None = None) -> dict:
         async with self.semaphore:
-            pdf_path = self.get_pdf_path(paper_id)
-            
-            # Skip if already downloaded
-            if pdf_path.exists() and pdf_path.stat().st_size > 1000:
+            clean_id, _ = self.get_pdf_path(paper_id)
+            pdf_obj  = f"papers/{clean_id}/pdf/{clean_id}.pdf"
+            meta_obj = f"papers/{clean_id}/metadata/{clean_id}.json"
+
+            pdf_exists = self._object_exists(pdf_obj)
+            meta_exists = self._object_exists(meta_obj) if metadata else True  # nếu không cần metadata coi như OK
+
+            # Skip logic
+            if pdf_exists and meta_exists:
                 self.stats["skipped"] += 1
                 return {
-                    "paper_id": paper_id,
+                    "paper_id": clean_id,
                     "status": "skipped",
-                    "path": str(pdf_path),
-                    "message": "Already downloaded"
+                    "message": "Already exists",
+                    "objects": [pdf_obj] + ([meta_obj] if metadata else [])
                 }
-            
-            pdf_url = self.get_pdf_url(paper_id)
-            
-            for attempt in range(self.retry_attempts):
+
+            # Nếu PDF có rồi nhưng thiếu metadata => chỉ upload metadata (không cần re-download PDF)
+            if pdf_exists and metadata and not meta_exists:
+                # Direct upload metadata without presigned URL (simpler & avoids clock/DNS issues)
                 try:
-                    # Add delay to avoid rate limiting
-                    await asyncio.sleep(self.delay_between_requests)
-                    
-                    async with session.get(pdf_url, timeout=30) as response:
-                        if response.status == 200:
-                            content = await response.read()
-                            
-                            # Save PDF
-                            with open(pdf_path, 'wb') as f:
-                                f.write(content)
-                            
-                            self.stats["successful"] += 1
-                            
-                            # Save metadata if provided
-                            if metadata:
-                                meta_path = pdf_path.with_suffix('.json')
-                                with open(meta_path, 'w') as f:
-                                    json.dump({
-                                        "paper_id": paper_id,
-                                        "title": metadata.get("title", ""),
-                                        "authors": metadata.get("authors", []),
-                                        "abstract": metadata.get("abstract", ""),
-                                        "categories": metadata.get("categories", ""),
-                                        "downloaded_at": datetime.now().isoformat(),
-                                        "pdf_size": len(content)
-                                    }, f, indent=2)
-                            
-                            return {
-                                "paper_id": paper_id,
-                                "status": "success",
-                                "path": str(pdf_path),
-                                "size": len(content)
-                            }
-                        
-                        elif response.status == 404:
-                            self.stats["failed"] += 1
-                            return {
-                                "paper_id": paper_id,
-                                "status": "not_found",
-                                "message": f"PDF not found (404)"
-                            }
-                        
-                        else:
-                            if attempt < self.retry_attempts - 1:
-                                await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                                continue
-                            
-                            self.stats["failed"] += 1
-                            return {
-                                "paper_id": paper_id,
-                                "status": "error",
-                                "message": f"HTTP {response.status}"
-                            }
-                
-                except asyncio.TimeoutError:
-                    if attempt < self.retry_attempts - 1:
-                        await asyncio.sleep(2 ** attempt)
-                        continue
-                    
-                    self.stats["failed"] += 1
-                    return {
-                        "paper_id": paper_id,
-                        "status": "timeout",
-                        "message": "Download timeout"
+                    meta_doc = {
+                        "paper_id": clean_id,
+                        "title": metadata.get("title", ""),
+                        "authors": metadata.get("authors", []),
+                        "abstract": metadata.get("abstract", ""),
+                        "categories": metadata.get("categories", ""),
+                        "downloaded_at": datetime.utcnow().isoformat() + "Z",
                     }
-                
+                    meta_bytes = json.dumps(meta_doc, ensure_ascii=False).encode("utf-8")
+                    self.minio_client.put_object(
+                        bucket_name=self.bucket_name,
+                        object_name=meta_obj,
+                        data=io.BytesIO(meta_bytes),
+                        length=len(meta_bytes),
+                        content_type="application/json"
+                    )
                 except Exception as e:
-                    if attempt < self.retry_attempts - 1:
-                        await asyncio.sleep(2 ** attempt)
-                        continue
-                    
                     self.stats["failed"] += 1
                     return {
-                        "paper_id": paper_id,
+                        "paper_id": clean_id,
                         "status": "error",
-                        "message": str(e)
+                        "message": f"Upload metadata failed: {e}"
                     }
-    
+                self.stats["successful"] += 1
+                return {
+                    "paper_id": clean_id,
+                    "status": "success",
+                    "objects": [pdf_obj, meta_obj],
+                    "note": "Reused existing PDF; added metadata"
+                }
+
+            # Need to download PDF (pdf not present)
+            pdf_url = self.get_pdf_url(clean_id)
+            timeout = aiohttp.ClientTimeout(total=300)
+            last_error = None
+            for attempt in range(self.retry_attempts):
+                pdf_buffer = bytearray()
+                try:
+                    await asyncio.sleep(self.delay_between_requests)
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        async with session.get(pdf_url) as resp:
+                            if resp.status == 404:
+                                self.stats["failed"] += 1
+                                return {
+                                    "paper_id": clean_id,
+                                    "status": "not_found",
+                                    "message": "PDF 404"
+                                }
+                            resp.raise_for_status()
+                            ctype = resp.headers.get("Content-Type", "")
+                            if "pdf" not in ctype.lower():
+                                log.warning(f"[DOWNLOAD] Unexpected content-type={ctype} for {clean_id}")
+
+                            async for chunk in resp.content.iter_chunked(1 << 20):
+                                if not chunk:
+                                    continue
+                                pdf_buffer.extend(chunk)
+                                if self.max_pdf_bytes and len(pdf_buffer) > self.max_pdf_bytes:
+                                    raise RuntimeError(
+                                        f"PDF exceeds max size ({len(pdf_buffer)/1024/1024:.2f} MB)"
+                                    )
+
+                    # Upload PDF directly via MinIO client (blocking call) off event loop
+                    def _put_pdf():
+                        self.minio_client.put_object(
+                            bucket_name=self.bucket_name,
+                            object_name=pdf_obj,
+                            data=io.BytesIO(pdf_buffer),
+                            length=len(pdf_buffer),
+                            content_type="application/pdf"
+                        )
+                    await asyncio.to_thread(_put_pdf)
+                    log.debug(f"[PDF-UPLOAD] {clean_id} size={len(pdf_buffer)} bytes attempt={attempt}")
+
+                    # Upload metadata if requested
+                    if metadata:
+                        meta_doc = {
+                            "paper_id": clean_id,
+                            "title": metadata.get("title", ""),
+                            "authors": metadata.get("authors", []),
+                            "abstract": metadata.get("abstract", ""),
+                            "categories": metadata.get("categories", ""),
+                            "downloaded_at": datetime.utcnow().isoformat() + "Z",
+                            "size_bytes": len(pdf_buffer)
+                        }
+                        meta_bytes = json.dumps(meta_doc, ensure_ascii=False).encode("utf-8")
+                        def _put_meta():
+                            self.minio_client.put_object(
+                                bucket_name=self.bucket_name,
+                                object_name=meta_obj,
+                                data=io.BytesIO(meta_bytes),
+                                length=len(meta_bytes),
+                                content_type="application/json"
+                            )
+                        await asyncio.to_thread(_put_meta)
+                        log.debug(f"[META-UPLOAD] {clean_id} meta_size={len(meta_bytes)}")
+
+                    self.stats["successful"] += 1
+                    return {
+                        "paper_id": clean_id,
+                        "status": "success",
+                        "objects": [pdf_obj] + ([meta_obj] if metadata else []),
+                        "bytes": len(pdf_buffer),
+                        "retries_used": attempt
+                    }
+                except asyncio.TimeoutError as e:
+                    last_error = f"timeout: {e}"
+                    if attempt < self.retry_attempts - 1:
+                        continue
+                except Exception as e:
+                    last_error = str(e)
+                    if attempt < self.retry_attempts - 1:
+                        continue
+
+            self.stats["failed"] += 1
+            return {
+                "paper_id": clean_id,
+                "status": "error",
+                "message": last_error or "Unknown error after retries"
+            }
+
+
     async def download_batch(self, papers: List[Dict]) -> List[Dict]:
-        """
-        Download a batch of papers
-        
-        Args:
-            papers: List of paper dictionaries with at least 'id' field
-            
-        Returns:
-            List of download results
-        """
-        self.stats["total"] = len(papers)
-        
-        async with aiohttp.ClientSession() as session:
-            tasks = []
-            for paper in papers:
-                paper_id = paper.get('id', paper.get('paperId', ''))
-                if paper_id:
-                    task = self.download_pdf(session, paper_id, paper)
-                    tasks.append(task)
-            
-            # Use tqdm for progress bar
-            results = []
-            for coro in tqdm.as_completed(tasks, desc="Downloading PDFs"):
-                result = await coro
-                results.append(result)
-                
-                # Log progress periodically
-                if len(results) % 100 == 0:
-                    log.info(f"Progress: {len(results)}/{len(tasks)} - "
-                              f"Success: {self.stats['successful']}, "
-                              f"Failed: {self.stats['failed']}, "
-                              f"Skipped: {self.stats['skipped']}")
-            
+        tasks: List[asyncio.Task] = []
+        results: List[Dict] = []
+        for paper in papers:
+            pid = paper.get("id") or paper.get("paperId") or paper.get("paper_id")
+            if not pid:
+                self.stats["skipped"] += 1
+                results.append({"paper_id": None, "status": "skipped", "message": "Missing id"})
+                continue
+            tasks.append(asyncio.create_task(self.download_pdf(pid, paper)))
+
+        total = len(tasks)
+        self.stats["total"] += total
+        if total == 0:
             return results
-    
-    def print_statistics(self):
-        """Print download statistics"""
-        log.info("\n" + "="*60)
-        log.info("DOWNLOAD STATISTICS:")
-        log.info("="*60)
-        log.info(f"Total papers: {self.stats['total']}")
-        log.info(f"Successfully downloaded: {self.stats['successful']}")
-        log.info(f"Failed downloads: {self.stats['failed']}")
-        log.info(f"Skipped (already exists): {self.stats['skipped']}")
-        
-        if self.stats['total'] > 0:
-            success_rate = (self.stats['successful'] / self.stats['total']) * 100
-            log.info(f"Success rate: {success_rate:.2f}%")
-    
-    def save_download_log(self, results: List[Dict], log_file: str = "../data/logs/download_log.json"):
-        """Save download results to log file"""
-        log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(log_path, 'w') as f:
-            json.dump({
-                "timestamp": datetime.now().isoformat(),
-                "statistics": self.stats,
-                "results": results
-            }, f, indent=2)
-        
-        log.info(f"Download log saved to: {log_path}")
 
+        for fut in tqdm(asyncio.as_completed(tasks), total=total, unit="paper", desc="Downloading PDFs"):
+            try:
+                res = await fut
+            except Exception as e:
+                res = {"paper_id": None, "status": "error", "message": str(e)}
+                self.stats["failed"] += 1
+            results.append(res)
+            done = len(results)
+            if done % 100 == 0 or done == total:
+                log.info(f"[DOWNLOAD] Progress {done}/{total} "
+                         f"success={self.stats['successful']} failed={self.stats['failed']} skipped={self.stats['skipped']}")
 
-async def download_sample_papers():
-    """Download a sample of papers for testing"""
-    # Sample paper IDs from different categories
-    sample_papers = [
-        {"id": "2301.00234", "title": "Sample NLP Paper 1", "categories": "cs.CL"},
-        {"id": "2312.15678", "title": "Sample ML Paper", "categories": "cs.LG cs.AI"},
-        {"id": "2401.12345", "title": "Sample IR Paper", "categories": "cs.IR"},
-        {"id": "1706.03762", "title": "Attention Is All You Need", "categories": "cs.CL cs.LG"},  # Transformer paper
-        {"id": "1810.04805", "title": "BERT", "categories": "cs.CL"},  # BERT paper
-    ]
-    
-    downloader = ArxivPDFDownloader(max_concurrent=3)
-    results = await downloader.download_batch(sample_papers)
-    
-    downloader.print_statistics()
-    downloader.save_download_log(results)
-    
-    return results
-
-
-def main():
-    """Main execution function"""
-    log.info("Starting ArXiv PDF Downloader...")
-    
-    # Run sample download
-    results = asyncio.run(download_sample_papers())
-    
-    # Print results
-    log.info("\n" + "="*60)
-    log.info("DOWNLOAD RESULTS:")
-    log.info("="*60)
-    for result in results:
-        if result['status'] == 'success':
-            log.info(f"✓ {result['paper_id']}: Downloaded to {result['path']}")
-        elif result['status'] == 'skipped':
-            log.info(f"⊙ {result['paper_id']}: {result['message']}")
-        else:
-            log.info(f"✗ {result['paper_id']}: {result.get('message', 'Failed')}")
-
-
-if __name__ == "__main__":
-    main()
+        return results

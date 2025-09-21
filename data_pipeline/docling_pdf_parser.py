@@ -1,41 +1,59 @@
-import argparse
-from pathlib import Path
-from typing import Optional
+import os
 import json
-from datetime import datetime
+import base64
+import hashlib
+from pathlib import Path
+from typing import Optional, List, Dict, Any
 from logs import log
+from dotenv import load_dotenv 
 from docling.document_converter import DocumentConverter
+from minio import Minio
+from PIL import Image  # Pillow already in requirements
+import io as _io
+import re
+from tempfile import NamedTemporaryFile
 
-def export_pdf_to_markdown(converter: DocumentConverter, pdf_path: Path, markdown_path: Path) -> dict:
-    """
-    Convert a single PDF to markdown using Docling and write to disk.
-
-    Returns a dict with status information for logging and metrics.
-    """
-    result = {
-        "pdf": str(pdf_path),
-        "markdown": str(markdown_path),
-        "status": "pending",
-        "bytes": 0,
-    }
-
-    try:
-        conversion = converter.convert(str(pdf_path))
-        markdown_text = conversion.document.export_to_markdown()
-        markdown_path.parent.mkdir(parents=True, exist_ok=True)
-        markdown_path.write_text(markdown_text, encoding='utf-8')
-        result["bytes"] = markdown_path.stat().st_size
-        result["status"] = "ok"
-        return result
-    except Exception as exc:  # Only logic-related comment: capture and report conversion errors
-        result["status"] = "error"
-        result["error"] = str(exc)
-        return result
+load_dotenv()  # load variables from .env if present
+DEFAULT_BUCKET = os.getenv("MINIO_BUCKET")
 
 
-def discover_pdfs(input_dir: Path, pattern: str) -> list[Path]:
-    """Discover PDF files in the input directory matching a glob pattern."""
-    return sorted(input_dir.glob(pattern))
+
+
+PDF_PATTERN = re.compile(r"(^|.*?/)([^/]+)/pdf/\2\.pdf$")  # matches any .../<paperId>/pdf/<paperId>.pdf capturing optional leading path
+
+
+def list_paper_pdf_jobs(client: Minio, bucket: str, prefix: str = "") -> list[dict]:
+    jobs: list[dict] = []
+    seen_pdf_paths: set[str] = set()
+    for obj in client.list_objects(bucket, prefix=prefix, recursive=True):
+        name = obj.object_name
+        if not name.endswith('.pdf') or '/pdf/' not in name:
+            continue
+        parts = name.split('/')
+        if len(parts) < 3:
+            continue
+        if parts[-2] != 'pdf':
+            continue
+        filename = parts[-1]
+        if not filename.endswith('.pdf'):
+            continue
+        paper_id_candidate = filename[:-4]
+        if parts[-3] != paper_id_candidate:
+            # Not matching pattern
+            continue
+        base_path = '/'.join(parts[:-2])  # includes paper_id folder
+        pdf_object = name
+        if pdf_object in seen_pdf_paths:
+            continue
+        seen_pdf_paths.add(pdf_object)
+        jobs.append({
+            'paper_id': paper_id_candidate,
+            'base_path': base_path,
+            'pdf_object': pdf_object,
+        })
+    # Stable order: sort by base_path then paper_id
+    jobs.sort(key=lambda j: (j['base_path'], j['paper_id']))
+    return jobs
 
 
 def build_output_path(output_dir: Path, pdf_path: Path) -> Path:
@@ -44,44 +62,87 @@ def build_output_path(output_dir: Path, pdf_path: Path) -> Path:
     return output_dir / f"{stem}.md"
 
 
-def save_run_manifest(output_dir: Path, stats: dict) -> None:
-    """Persist a small JSON manifest describing the run for auditability."""
-    manifest = {
-        "timestamp": datetime.now().isoformat(),
-        "input_dir": stats.get("input_dir"),
-        "output_dir": str(output_dir),
-        "total": stats.get("total", 0),
-        "converted": stats.get("converted", 0),
-        "skipped": stats.get("skipped", 0),
-        "failed": stats.get("failed", 0),
-    }
-    path = output_dir / f"docling_parse_manifest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+def object_exists(client: Minio, bucket: str, object_name: str) -> bool:
+    try:
+        client.stat_object(bucket, object_name)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def build_minio_client() -> Minio:
+    return Minio(**{"endpoint": str(os.getenv("MINIO_ENDPOINT")),
+                    "access_key": str(os.getenv("MINIO_ACCESS_KEY")),
+                    "secret_key": str(os.getenv("MINIO_SECRET_KEY")),
+                    "secure": False
+                    })
+
+def ensure_bucket(client: Minio, bucket: str):
+    try:
+        if not client.bucket_exists(bucket):
+            client.make_bucket(bucket)
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Failed ensuring bucket {bucket}: {e}")
+    
+def _mime_from_ext(ext: str) -> str:
+    ext = ext.lower().lstrip(".")
+    if ext in {"jpg", "jpeg"}:
+        return "image/jpeg"
+    if ext == "png":
+        return "image/png"
+    if ext == "gif":
+        return "image/gif"
+    if ext == "bmp":
+        return "image/bmp"
+    if ext == "tiff":
+        return "image/tiff"
+    if ext == "webp":
+        return "image/webp"
+    return f"image/{ext}"
+
+def upload_bytes(client: Minio, bucket: str, object_name: str, data: bytes, content_type: str):
+    try:
+        import io as _io
+        client.put_object(
+            bucket_name=bucket,
+            object_name=object_name,
+            data=_io.BytesIO(data),
+            length=len(data),
+            content_type=content_type,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Upload failed for {object_name}: {e}")
+
+
+def image_filename(page: int, idx: int, raw_bytes: bytes, ext: str) -> str:
+    sha16 = hashlib.sha256(raw_bytes).hexdigest()[:16]
+    return f"fig_p{page}_{idx}_{sha16}.{ext}"
+
+
+"""Docling PDF parsing and MinIO upload script (local file writes removed)."""
 
 
 def run(
-    input_dir: Path,
-    output_dir: Path,
-    pattern: str = "*.pdf",
+    bucket: str = DEFAULT_BUCKET,
+    prefix: str = "",
     overwrite: bool = False,
     limit: Optional[int] = None,
+    max_image_bytes: int = 15 * 1024 * 1024,
+    embed_images: bool = False,
 ) -> dict:
-    """
-    Perform batch conversion of PDFs under input_dir to markdown files under output_dir.
+    log.info("[DOCLING] Starting remote Docling PDF parsing pipeline…")
+    if not bucket:
+        raise RuntimeError("MINIO_BUCKET is not set (None). Set it in your environment or .env file as MINIO_BUCKET=<bucket_name>.")
+    log.info(f"[DOCLING] Bucket: {bucket} prefix: '{prefix}'")
 
-    Returns run statistics for logging and testing.
-    """
-    log.info("Starting Docling PDF parsing pipeline…")
-    log.info(f"Input: {input_dir}")
-    log.info(f"Output: {output_dir}")
-
-    pdf_paths = discover_pdfs(input_dir, pattern)
+    minio_client = build_minio_client()
+    ensure_bucket(minio_client, bucket)
+    jobs = list_paper_pdf_jobs(minio_client, bucket, prefix=prefix)
     if limit is not None:
-        pdf_paths = pdf_paths[: max(0, int(limit))]
-
-    log.info(f"Discovered {len(pdf_paths)} PDF(s)")
-    output_dir.mkdir(parents=True, exist_ok=True)
+        jobs = jobs[: max(0, int(limit))]
+    log.info(f"[DOCLING] Discovered {len(jobs)} PDF object(s) matching pattern")
+    if not jobs:
+        log.warning("[DOCLING] No PDFs found. Check: 1) MINIO_BUCKET value 2) DOCLING_PREFIX (often should be empty or 'papers/') 3) Object layout ends with /<paperId>/pdf/<paperId>.pdf")
 
     converter = DocumentConverter()
 
@@ -89,96 +150,160 @@ def run(
     skipped = 0
     failed = 0
 
-    for pdf in pdf_paths:
-        markdown_path = build_output_path(output_dir, pdf)
+    for job in jobs:
+        paper_id = job['paper_id']
+        base_path = job['base_path']
+        pdf_object = job['pdf_object']
+        md_object = f"{base_path}/markdown/{paper_id}.md"
+        images_prefix = f"{base_path}/images/"
 
-        if markdown_path.exists() and not overwrite:
+        if not overwrite and object_exists(minio_client, bucket, md_object):
             skipped += 1
+            log.debug(f"[DOCLING] Skip {paper_id}: markdown already exists at {md_object}")
             continue
-
-        res = export_pdf_to_markdown(converter, pdf, markdown_path)
-        if res["status"] == "ok":
-            converted += 1
-            log.debug(f"Converted: {pdf} -> {markdown_path} ({res['bytes']} bytes)")
-        else:
+        # Download PDF
+        try:
+            resp = minio_client.get_object(bucket, pdf_object)
+            pdf_bytes = resp.read()
+            resp.close()
+            resp.release_conn()
+        except Exception as e:  # noqa: BLE001
             failed += 1
-            log.warning(f"Failed: {pdf} -> {res.get('error', 'unknown error')}")
+            log.warning(f"[DOCLING] Failed download {pdf_object}: {e}")
+            continue
+        # Write to temp file for Docling
+        try:
+            with NamedTemporaryFile(suffix='.pdf', delete=True) as tmp:
+                tmp.write(pdf_bytes)
+                tmp.flush()
+                # Reuse the same converter instead of instantiating per file
+                conversion = converter.convert(tmp.name)
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            log.warning(f"[DOCLING] Conversion failed {paper_id}: {e}")
+            continue
+        # Export markdown
+        try:
+            markdown_text = conversion.document.export_to_markdown()
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            log.warning(f"[DOCLING] Markdown export failed {paper_id}: {e}")
+            continue
+        # Upload markdown
+        try:
+            upload_bytes(minio_client, bucket, md_object, markdown_text.encode('utf-8'), 'text/markdown')
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"[DOCLING] Upload markdown failed {paper_id}: {e}")
+        # Images extraction
+        images_uploaded: List[str] = []
+        images_detail: List[Dict[str, Any]] = []
+        seen_hashes: set[str] = set()
+        try:
+            for p_idx, page in enumerate(getattr(conversion.document, 'pages', [])):
+                if hasattr(page, 'images'):
+                    candidates = page.images
+                elif hasattr(page, 'elements'):
+                    candidates = [el for el in page.elements if getattr(el, 'image', None)]
+                else:
+                    candidates = []
+                for i_idx, img in enumerate(candidates):
+                    raw = None
+                    if hasattr(img, 'raw_bytes') and img.raw_bytes:
+                        raw = img.raw_bytes
+                    elif hasattr(img, 'bytes') and img.bytes:
+                        raw = img.bytes
+                    elif hasattr(img, 'image') and getattr(img.image, 'data', None):
+                        try:
+                            raw = base64.b64decode(img.image.data)
+                        except Exception:
+                            raw = None
+                    if not raw:
+                        continue
+                    if max_image_bytes and len(raw) > max_image_bytes:
+                        log.debug(f"[DOCLING] Skip oversize image {len(raw)} bytes {paper_id} p{p_idx} i{i_idx}")
+                        continue
+                    sha256_full = hashlib.sha256(raw).hexdigest()
+                    if sha256_full in seen_hashes:
+                        continue
+                    seen_hashes.add(sha256_full)
+                    ext = 'png'
+                    fmt = None
+                    width = height = None
+                    mode = None
+                    try:
+                        with Image.open(_io.BytesIO(raw)) as im:
+                            fmt = (im.format or '').lower()
+                            if fmt == 'jpeg':
+                                ext = 'jpg'
+                            elif fmt in {'png','gif','bmp','tiff','webp','jpg','jpeg'}:
+                                ext = 'jpg' if fmt == 'jpeg' else fmt
+                            width, height = im.size
+                            mode = im.mode
+                    except Exception:
+                        pass
+                    fname = image_filename(p_idx, i_idx, raw, ext)
+                    try:
+                        upload_bytes(minio_client, bucket, f"{images_prefix}{fname}", raw, _mime_from_ext(ext))
+                        images_uploaded.append(fname)
+                        images_detail.append({
+                            'file': fname,
+                            'page': p_idx,
+                            'index': i_idx,
+                            'bytes': len(raw),
+                            'hash': sha256_full[:32],
+                            'format': fmt,
+                            'width': width,
+                            'height': height,
+                            'mode': mode,
+                        })
+                    except Exception as ie:  # noqa: BLE001
+                        log.debug(f"[DOCLING] Skip image upload {paper_id} p{p_idx} i{i_idx}: {ie}")
+        except Exception:
+            pass
+        # Optional embed
+        if embed_images and images_uploaded:
+            append_lines = ["\n\n## Extracted Figures\n"]
+            for det in images_detail:
+                append_lines.append(f"![fig p{det['page']} i{det['index']}](/images/{det['file']})")
+            markdown_text_final = markdown_text + "\n" + "\n".join(append_lines) + "\n"
+            try:
+                upload_bytes(minio_client, bucket, md_object, markdown_text_final.encode('utf-8'), 'text/markdown')
+            except Exception as e:  # noqa: BLE001
+                log.debug(f"[DOCLING] Re-upload markdown with embeds failed {paper_id}: {e}")
+        converted += 1
+        log.debug(f"[DOCLING] Processed {paper_id} (images={len(images_uploaded)})")
 
     stats = {
-        "input_dir": str(input_dir),
-        "total": len(pdf_paths),
+        "bucket": bucket,
+        "prefix": prefix,
+        "total": len(jobs),
         "converted": converted,
         "skipped": skipped,
         "failed": failed,
     }
 
     log.info(
-        f"Completed. total={stats['total']} converted={converted} skipped={skipped} failed={failed}"
+        f"[DOCLING] Completed. total={stats['total']} converted={converted} skipped={skipped} failed={failed}"
     )
-    save_run_manifest(output_dir, stats)
     return stats
 
-
-def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for the parser script."""
-    parser = argparse.ArgumentParser(description="Batch convert PDFs to markdown using Docling")
-    parser.add_argument(
-        "--input-dir",
-        default="/Users/admin/code/cazoodle/data/pdfs",
-        help="Directory containing input PDF files",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="./data/processed/markdown",
-        help="Directory to write .markdown files",
-    )
-    parser.add_argument(
-        "--pattern",
-        default="*.pdf",
-        help="Glob pattern to select PDFs under input-dir",
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite existing outputs if they exist",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Optional maximum number of files to process",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="count",
-        default=1,
-        help="Increase verbosity (-v for INFO, -vv for DEBUG)",
-    )
-    return parser.parse_args()
-
-
 def main() -> None:
-    """Entry point for CLI execution."""
-    args = parse_args()
-    configure_log(args.verbose)
-
-    input_dir = Path(args.input_dir).expanduser().resolve()
-    output_dir = Path(args.output_dir).expanduser().resolve()
-
-    if not input_dir.exists():
-        raise SystemExit(f"Input directory does not exist: {input_dir}")
+    bucket = os.getenv("MINIO_BUCKET", DEFAULT_BUCKET)
+    prefix = os.getenv("DOCLING_PREFIX", "papers")
+    overwrite = os.getenv("DOCLING_OVERWRITE", "false").lower() in {"1", "true", "yes"}
+    limit_env = os.getenv("DOCLING_LIMIT")
+    limit = int(limit_env) if limit_env and limit_env.isdigit() else None
+    max_image_bytes = int(os.getenv("DOCLING_MAX_IMAGE_BYTES", str(15 * 1024 * 1024)))
+    embed_images = os.getenv("DOCLING_EMBED_IMAGES", "false").lower() in {"1", "true", "yes"}
 
     run(
-        input_dir=input_dir,
-        output_dir=output_dir,
-        pattern=args.pattern,
-        overwrite=args.overwrite,
-        limit=args.limit,
+        bucket=bucket,
+        prefix=prefix,
+        overwrite=overwrite,
+        limit=limit,
+        max_image_bytes=max_image_bytes,
+        embed_images=embed_images,
     )
-
 
 if __name__ == "__main__":
     main()
-
-
