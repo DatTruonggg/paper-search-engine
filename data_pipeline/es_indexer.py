@@ -16,7 +16,7 @@ from datetime import datetime
 class ESIndexer:
     def __init__(
         self,
-        es_host: str = "103.3.247.120:9200",
+        es_host: str = "localhost:9200",
         index_name: str = "papers",
         embedding_dim: int = 1024
     ):
