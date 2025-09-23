@@ -31,6 +31,11 @@ class SearchResult:
     has_images: Optional[bool] = False
     pdf_size: Optional[int] = None
     chunk_matches: Optional[List[Dict]] = None
+    # Chunk-specific fields (populated when searching chunks)
+    chunk_text: Optional[str] = None
+    chunk_start: Optional[int] = None
+    chunk_end: Optional[int] = None
+    chunk_index: Optional[int] = None
 
 
 @dataclass
@@ -211,7 +216,12 @@ class ElasticsearchSearchService:
                 publish_date=hit.get('publish_date'),
                 word_count=hit.get('word_count'),
                 has_images=hit.get('has_images', False),
-                pdf_size=hit.get('pdf_size')
+                pdf_size=hit.get('pdf_size'),
+                # Populate chunk fields if this is a chunk document
+                chunk_text=hit.get('chunk_text'),
+                chunk_start=hit.get('chunk_start'),
+                chunk_end=hit.get('chunk_end'),
+                chunk_index=hit.get('chunk_index')
             )
 
             results.append(result)

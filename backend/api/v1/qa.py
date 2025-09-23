@@ -55,8 +55,8 @@ class SearchResultsQARequest(BaseModel):
 class MixedQARequest(BaseModel):
     """Request model combining selected paper IDs and/or a search query."""
     question: str = Field(..., min_length=1, max_length=1000)
-    paper_ids: List[str] | None = Field(default=None, description="Explicit selected (bookmarked) paper IDs")
-    search_query: str | None = Field(default=None, description="Optional fresh search query to augment context")
+    paper_ids: List[str] = Field(default=None, description="Explicit selected (bookmarked) paper IDs")
+    search_query: str = Field(default=None, description="Optional fresh search query to augment context")
     max_chunks_per_selected: int = Field(default=3, ge=1, le=10)
     max_search_papers: int = Field(default=5, ge=1, le=15)
     max_search_chunks_per_paper: int = Field(default=2, ge=1, le=5)
