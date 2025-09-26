@@ -563,6 +563,55 @@ async def snippet_search(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# POST alias to support clients that send JSON bodies instead of query params
+class SnippetSearchBody(BaseModel):
+    query: str
+    fields: Optional[str] = None
+    paperIds: Optional[str] = None
+    minCitationCount: Optional[int] = None
+    insertedBefore: Optional[str] = None
+    publicationDateOrYear: Optional[str] = None
+    limit: Optional[int] = 100
+    offset: Optional[int] = 0
+
+
+@router.post("/snippet/search", response_model=SnippetSearchResponse)
+async def snippet_search_post(
+    body: Optional[SnippetSearchBody] = None,
+    # Also accept query params for clients that POST with URL params
+    query: Optional[str] = Query(None),
+    fields: Optional[str] = Query(None),
+    paperIds: Optional[str] = Query(None),
+    minCitationCount: Optional[int] = Query(None),
+    insertedBefore: Optional[str] = Query(None),
+    publicationDateOrYear: Optional[str] = Query(None),
+    limit: Optional[int] = Query(None),
+    offset: Optional[int] = Query(None),
+):
+    # Prefer JSON body if provided; otherwise fall back to URL query parameters
+    eff_query = (body.query if body and body.query is not None else query)
+    if not eff_query:
+        raise HTTPException(status_code=422, detail="query is required")
+    eff_fields = body.fields if body else fields
+    eff_paperIds = body.paperIds if body else paperIds
+    eff_minCitationCount = body.minCitationCount if body else minCitationCount
+    eff_insertedBefore = body.insertedBefore if body else insertedBefore
+    eff_pubDateOrYear = body.publicationDateOrYear if body else publicationDateOrYear
+    eff_limit = (body.limit if body and body.limit is not None else (limit if limit is not None else 100))
+    eff_offset = (body.offset if body and body.offset is not None else (offset if offset is not None else 0))
+
+    return await snippet_search(
+        query=eff_query,
+        fields=eff_fields,
+        paperIds=eff_paperIds,
+        minCitationCount=eff_minCitationCount,
+        insertedBefore=eff_insertedBefore,
+        publicationDateOrYear=eff_pubDateOrYear,
+        limit=eff_limit,
+        offset=eff_offset,
+    )
+
+
 @router.post("/paper/batch")
 async def paper_batch(
     request: Request,
