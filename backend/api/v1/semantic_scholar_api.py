@@ -11,6 +11,11 @@ from backend.api.main import search_service
 from backend.llama_agent.config import llama_config
 from backend.llama_agent.query_analyzer import QueryAnalyzer
 from logs import log
+from asta.api.scholarqa.rag.retrieval import PaperFinder
+from asta.api.scholarqa.rag.retriever_base import FullTextRetriever, AbstractRetriever
+from asta.api.scholarqa.scholar_qa import ScholarQA
+from pydantic import BaseModel
+from asta.api.scholarqa.llms.constants import GEMINI_25_PRO, GPT_5_CHAT
 
 router = APIRouter(prefix="/graph/v1", tags=["Semantic Scholar API"])
 
@@ -607,4 +612,175 @@ async def paper_batch(
 
     except Exception as e:
         log.error(f"Paper batch error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/query", response_model=PaperRelevanceSearchResponse)
+async def query_demo(
+    query: str = Query(..., description="User query to retrieve top relevant papers"),
+    limit: int = Query(10, ge=1, le=100, description="Number of papers to return"),
+    fields: Optional[str] = Query("paperId,title,abstract,year,venue,authors", description="Fields to include in response")
+):
+    """
+    Simple demo endpoint: from a user query return top relevant papers.
+
+    This is a convenience wrapper around the paper search flow with sane defaults,
+    suitable for quick demos.
+    """
+    if not search_service:
+        raise HTTPException(status_code=503, detail="Search service not initialized")
+
+    try:
+        # Direct search for papers (title/abstract only)
+        results = search_service.search(
+            query=query,
+            max_results=min(limit, 100),
+            search_mode="hybrid",
+            include_chunks=False
+        )
+
+        # Format results
+        papers = []
+        for result in results[:limit]:
+            try:
+                papers.append(format_paper_for_s2(result, fields))
+            except Exception as e:
+                log.error(f"Error formatting paper {result.paper_id}: {e}")
+                papers.append({
+                    "paperId": result.paper_id,
+                    "title": getattr(result, 'title', None)
+                })
+
+        return PaperRelevanceSearchResponse(
+            total=len(papers),
+            offset=0,
+            next=None,
+            data=papers
+        )
+    except Exception as e:
+        log.error(f"Query demo error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class QABody(BaseModel):
+    query: str
+    inline_tags: bool = True
+    n_retrieval: int | None = None
+    n_keyword_srch: int | None = None
+
+
+@router.post("/qa")
+async def graph_qa(body: QABody):
+    """
+    Run full ScholarQA pipeline using the S2-like graph endpoints under the hood.
+    This executes: preprocess → retrieval → rerank+aggregate → quotes → clustering → summary.
+    """
+    if not search_service:
+        raise HTTPException(status_code=503, detail="Search service not initialized")
+
+    try:
+        log.info(f"[GRAPH][QA] start | query='{body.query}'")
+        # Use in-process ES retriever to avoid HTTP self-calls
+        class InProcessESRetriever(AbstractRetriever):
+            def __init__(self, svc, n_retrieval: int = 128, n_keyword_srch: int = 10, search_mode: str = "hybrid"):
+                self.svc = svc
+                self.n_retrieval = n_retrieval
+                self.n_keyword_srch = n_keyword_srch
+                self.search_mode = search_mode
+
+            def _parse_year(self, year_range: str | None) -> tuple[Optional[str], Optional[str]]:
+                if not year_range:
+                    return None, None
+                try:
+                    parts = str(year_range).split("-")
+                    start = parts[0].strip() if parts and parts[0].strip() else None
+                    end = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
+                    return (f"{start}-01-01" if start else None, f"{end}-12-31" if end else None)
+                except Exception:
+                    return None, None
+
+            def retrieve_passages(self, query: str, **filter_kwargs) -> list[dict[str, Any]]:
+                date_from, date_to = self._parse_year(filter_kwargs.get("year"))
+                results = self.svc.search(
+                    query=query,
+                    max_results=self.n_retrieval,
+                    search_mode=self.search_mode,
+                    date_from=date_from,
+                    date_to=date_to,
+                    include_chunks=True,
+                )
+                snippets: list[dict[str, Any]] = []
+                for hit in results:
+                    chunk_text = getattr(hit, "chunk_text", None)
+                    if not chunk_text:
+                        continue
+                    snippets.append({
+                        "corpus_id": str(hit.paper_id) if hit.paper_id is not None else "",
+                        "title": hit.title or "",
+                        "text": chunk_text or "",
+                        "score": float(getattr(hit, "score", 0.0) or 0.0),
+                        "section_title": "chunk",
+                        "char_start_offset": int(getattr(hit, "chunk_start", 0) or 0),
+                        "sentence_offsets": [],
+                        "ref_mentions": [],
+                        "pdf_hash": "",
+                        "stype": "es",
+                    })
+                return snippets
+
+            def retrieve_additional_papers(self, query: str, **filter_kwargs) -> list[dict[str, Any]]:
+                if not self.n_keyword_srch:
+                    return []
+                date_from, date_to = self._parse_year(filter_kwargs.get("year"))
+                results = self.svc.search(
+                    query=query,
+                    max_results=self.n_keyword_srch,
+                    search_mode=self.search_mode,
+                    date_from=date_from,
+                    date_to=date_to,
+                    include_chunks=False,
+                )
+                papers: list[dict[str, Any]] = []
+                for hit in results:
+                    papers.append({
+                        "corpus_id": str(hit.paper_id) if hit.paper_id is not None else "",
+                        "title": hit.title or "",
+                        "abstract": hit.abstract or "",
+                        "text": hit.abstract or "",
+                        "section_title": "abstract",
+                        "char_start_offset": 0,
+                        "sentence_offsets": [],
+                        "ref_mentions": [],
+                        "score": 0.0,
+                        "stype": "es_api",
+                        "pdf_hash": "",
+                        "authors": [{"name": a} for a in (hit.authors or [])],
+                        "year": int(hit.publish_date[:4]) if getattr(hit, "publish_date", None) else 0,
+                        "venue": (hit.categories[0] if getattr(hit, "categories", None) else ""),
+                        "citationCount": 0,
+                        "referenceCount": 0,
+                        "influentialCitationCount": 0,
+                    })
+                return papers
+
+        retriever = InProcessESRetriever(
+            search_service,
+            n_retrieval=body.n_retrieval or 128,
+            n_keyword_srch=body.n_keyword_srch or 10,
+        )
+        paper_finder = PaperFinder(retriever)
+        # Prefer Gemini by default unless overridden
+        llm_model = GEMINI_25_PRO
+        decomposer_llm = llm_model
+        sqa = ScholarQA(
+            paper_finder=paper_finder,
+            llm_model=llm_model,
+            decomposer_llm=decomposer_llm,
+            fallback_llm=GPT_5_CHAT
+        )
+        result = sqa.answer_query(body.query, inline_tags=body.inline_tags)
+        log.info(f"[GRAPH][QA] done | sections={len(result.get('sections', [])) if isinstance(result, dict) else 'N/A'}")
+        return result
+    except Exception as e:
+        log.exception("[GRAPH][QA] failed")
         raise HTTPException(status_code=500, detail=str(e))

@@ -86,6 +86,7 @@ app.include_router(qa.router)
 app.include_router(health.router)
 app.include_router(ingestion.router)
 app.include_router(semantic_scholar_api.router)
+# app.include_router(asta.router)
 
 log.info("All API routes configured")
 

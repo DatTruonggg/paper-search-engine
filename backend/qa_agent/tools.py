@@ -195,7 +195,7 @@ class QARetrievalTool:
 
     async def retrieve_multi_paper_context(self, paper_ids: List[str], question: str, max_chunks_per_paper: int = 3) -> List[ContextChunk]:
         results: List[ContextChunk] = []
-        for pid in paper_ids:
+        for pid in paper_ids: #iteration
             chunks = await self.retrieve_single_paper_context(pid, question, max_chunks=max_chunks_per_paper)
             results.extend(chunks)
         # sort global by score desc then cut overall max
