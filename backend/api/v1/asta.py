@@ -38,7 +38,7 @@ async def asta_qa(req: QARequest) -> QAResult:
         log.info(f"[ASTA][API] /asta/qa start | query='{req.query}'")
 
         # Build retrieval + reranking stack
-        retriever = FullTextRetriever(n_retrieval=1000, n_keyword_srch=10)
+        retriever = FullTextRetriever(n_retrieval=1000, n_keyword_srch=30)
         reranker = ModalReranker(app_name='<modal_app_name>', api_name='<modal_api_name>', batch_size=256, gen_options=dict())
 
         # Wrap into PaperFinder; n_rerank=-1 keeps all candidates post-rerank
