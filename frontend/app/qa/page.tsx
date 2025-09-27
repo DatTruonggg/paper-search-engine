@@ -13,6 +13,7 @@ import { ChatMessage, type MessageWithCitations } from "@/components/chat-messag
 import { Input } from "@/components/ui/input"
 import { Menu, X, Search, MessageSquare, ArrowLeft, Bot } from "lucide-react"
 import { ResearchService, type QAResponse } from "@/lib/research-service"
+import { apiFetch } from "@/lib/apiClient"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
 
@@ -137,6 +138,115 @@ export default function QAPage() {
     }
   }
 
+  // Helper: map ASTA ScholarQA result -> Assistant Chat Message
+  const mapASTAResultToAssistant = (result: any): MessageWithCitations => {
+    const sections: any[] = Array.isArray(result?.sections) ? result.sections : []
+
+    // Build a stable citation index map in order of first appearance
+    const citationIndex = new Map<string, { idx: number; title?: string }>()
+    let nextIdx = 1
+    sections.forEach((s) => {
+      const cites: any[] = Array.isArray(s?.citations) ? s.citations : []
+      cites.forEach((c) => {
+        const p = c?.paper || {}
+        const id = String(p?.corpus_id ?? p?.corpusId ?? "")
+        if (id && !citationIndex.has(id)) {
+          citationIndex.set(id, { idx: nextIdx++, title: p?.title })
+        }
+      })
+    })
+
+    // Replace <Paper ...> tags with numbered references [n] (plain inline), links only in References
+    const replacePaperTags = (text: string): string => {
+      // strip model tags and noisy artifacts
+      let out = text.replace(/<Model[^>]*>/gi, "").replace(/<\/Model>/gi, "")
+      // drop malformed double-bracket artifacts like [[ ... ]]
+      out = out.replace(/\[\[[^\]]*\]\]?/g, "")
+      // remove long markdown-like separators
+      out = out.replace(/\s*---+\s*/g, "\n\n")
+      const paperTag = /<Paper\s+[^>]*?(?:corpusId="([^"]*)")[^>]*?(?:arxivId="([^"]*)")?[^>]*?>/gi
+      out = out.replace(paperTag, (_m, corpusId: string, arxivId?: string) => {
+        const id = String(arxivId || corpusId || "").trim()
+        if (!id) return ""
+        const entry = citationIndex.get(id) || (() => {
+          const newIdx = nextIdx++
+          const e = { idx: newIdx, title: undefined as string | undefined }
+          citationIndex.set(id, e)
+          return e
+        })()
+        return ` [${entry.idx}] `
+      }).replace(/<\/Paper>/gi, "")
+      // normalize adjacent bracket numbers to have commas: "][" => "], ["
+      out = out.replace(/\]\s*\[(\d+)\]/g, '], [$1]')
+      return out
+    }
+
+    const sentenceWrap = (t: string): string => {
+      return t
+        .replace(/\s*\n\s*/g, ' ')
+        .replace(/\.(\s+)(?=[A-Z\[(])/g, '.\n')
+        .replace(/\?\s+/g, '?\n')
+        .replace(/!\s+/g, '!\n')
+        .replace(/[ \t]+/g, ' ')
+        .trim()
+    }
+
+    const content = sections
+      .map((s) => {
+        const title = s?.title ? `**${s.title}**\n\n` : ""
+        const tldr = s?.tldr ? `${s.tldr}\n\n` : ""
+        const raw = s?.text || ""
+        const text = sentenceWrap(replacePaperTags(raw))
+        // Giữ newline sau title để đoạn văn xuống dòng rõ ràng
+        return `${title}${tldr}${text}`
+      })
+      .filter(Boolean)
+      .join("\n\n")
+
+    // Build bibliography block
+    const biblioLines = Array.from(citationIndex.entries())
+      .sort((a, b) => (a[1].idx - b[1].idx))
+      .map(([id, meta]) => {
+        const title = meta.title || id
+        return `[${meta.idx}] ${title}`
+      })
+
+    // Clean punctuation spacing around references and citation brackets; remove (n sources)
+    let finalContent = content
+      .replace(/\(\s*\d+\s+sources?\s*\)/gi, '')
+      .replace(/\],\s*\[(\d+)\]/g, '] [$1]')
+      .replace(/\]\s+\[(\d+)\]/g, ' [$1]')
+      .replace(/\s*\]\s*\./g, '.')
+      .replace(/,\s*(\[\d+\])/g, ' $1')
+      .replace(/\],\s*(\[\d+\])/g, ' $1')
+      .replace(/\[(\d+)(?!\])/g, '[$1]');
+
+    if (biblioLines.length > 0) {
+      finalContent = `${finalContent}\n\nReferences:\n- ${biblioLines.join("\n- ")}`
+      // Convert reference numbers [n] into links, but keep visible brackets in output
+      finalContent = finalContent.replace(/^- \[(\d+)\]\s+(.+)$/gm, (_m, n, t) => `- \[[${n}](https://arxiv.org/abs/${Array.from(citationIndex.keys())[Number(n)-1]})\] ${t}`)
+    }
+
+    // Sources for side-panel (optional)
+    const sources = Array.from(citationIndex.entries())
+      .sort((a, b) => a[1].idx - b[1].idx)
+      .map(([id, meta]) => ({
+        id,
+        title: meta.title || id,
+        authors: [],
+        url: `https://arxiv.org/abs/${id}`,
+        type: "paper" as const,
+      }))
+
+    return {
+      id: `assistant_${Date.now()}`,
+      role: "assistant",
+      content: cleanAnswerText(finalContent || ""),
+      timestamp: new Date(),
+      sources,
+    }
+  }
+
   // Send QA question using selected papers (or all current results for multi mode)
   const handleAsk = async (question: string, _filters?: SearchFilters, qaMode?: QAMode) => {
     setIsLoading(true)
@@ -157,30 +267,13 @@ export default function QAPage() {
         timestamp: new Date(),
       }
       setMessages((prev) => [...prev, userMsg])
-      if (qaMode === "single-paper") {
-        if (selectedIds.length === 0) return
-        const firstOnly = [selectedIds[0]]
-        console.log('[QA] POST /api/v1/qa/(single|multi)-paper payload', { paper_ids: selectedIds, count: selectedIds.length, question })
-        const resp = await api.qaSelected({ question, paperIds: selectedIds, citationStyle: "APA" })
-        console.log('[QA] response', {
-          confidence: Math.round((resp.confidenceScore || 0) * 100),
-          chunks: resp.contextChunksCount,
-          papersInvolved: resp.papersInvolved,
-        })
-        setMessages((prev) => [...prev, mapQAtoAssistant(resp)])
-      } else {
-        // multi-paper: dùng danh sách chọn; nếu rỗng, fallback toàn bộ kết quả hiện có
-        const ids = selectedIds.length > 0 ? selectedIds : searchResults.map(p => p.id)
-        if (ids.length === 0) throw new Error("No papers available for multi-paper QA")
-        console.log('[QA] POST /api/v1/qa/multi-paper payload', { paper_ids: ids, count: ids.length, question })
-        const resp = await api.qaSelected({ question, paperIds: ids, citationStyle: "APA" })
-        console.log('[QA] response', {
-          confidence: Math.round((resp.confidenceScore || 0) * 100),
-          chunks: resp.contextChunksCount,
-          papersInvolved: resp.papersInvolved,
-        })
-        setMessages((prev) => [...prev, mapQAtoAssistant(resp)])
-      }
+      // Use ASTA QA endpoint (unscoped, backend handles unlimited retrieval)
+      const asta = await apiFetch<{ result: any }>("/api/v1/asta/qa", {
+        method: "POST",
+        body: JSON.stringify({ query: question }),
+        timeoutMs: 0,
+      })
+      setMessages((prev) => [...prev, mapASTAResultToAssistant(asta.result)])
 
       if (currentSession) {
         setSessions((prev) =>
@@ -215,18 +308,12 @@ export default function QAPage() {
     setMessages((prev) => [...prev, userMsg])
     setChatInput("")
     try {
-      const ids = Array.from(selectedPapers)
-      const paperIds = ids.length > 0 ? ids : searchResults.map(p => p.id)
-      if (paperIds.length === 0) throw new Error("No papers available for QA")
-      const meta = paperIds.map((id) => ({ id, title: searchResults.find(x => x.id === id)?.title }))
-      console.log('[QA] chat:start', { question: text, paperIds, meta })
-      const resp = await api.qaSelected({ question: text, paperIds, citationStyle: "APA" })
-      console.log('[QA] chat:response', {
-        confidence: Math.round((resp.confidenceScore || 0) * 100),
-        chunks: resp.contextChunksCount,
-        papersInvolved: resp.papersInvolved,
+      const asta = await apiFetch<{ result: any }>("/api/v1/asta/qa", {
+        method: "POST",
+        body: JSON.stringify({ query: text }),
+        timeoutMs: 0,
       })
-      setMessages((prev) => [...prev, mapQAtoAssistant(resp)])
+      setMessages((prev) => [...prev, mapASTAResultToAssistant(asta.result)])
     } catch (e) {
       console.error('[QA] chat:error', e)
       setQaError((e as Error)?.message || "Unknown error")
@@ -449,7 +536,7 @@ export default function QAPage() {
                 {messages.map((m) => (
                   <ChatMessage key={m.id} message={m} />
                 ))}
-                {isLoading && (
+          {isLoading && (
                   <div className="flex gap-3 justify-start">
                     <div className="flex-shrink-0">
                       <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center">
@@ -457,7 +544,7 @@ export default function QAPage() {
                       </div>
                     </div>
                     <div className="max-w-[80%]">
-                      <div className="p-4 bg-card text-card-foreground rounded-md border border-border">
+                <div className="p-4 bg-card text-card-foreground rounded-md border border-border">
                         <div className="flex items-center gap-1 h-4" aria-label="Thinking...">
                           <span className="w-2 h-2 rounded-full bg-muted-foreground/60 animate-bounce" style={{ animationDelay: '0ms' }} />
                           <span className="w-2 h-2 rounded-full bg-muted-foreground/60 animate-bounce" style={{ animationDelay: '150ms' }} />
