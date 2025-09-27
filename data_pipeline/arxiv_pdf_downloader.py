@@ -76,7 +76,7 @@ class ArxivPDFDownloader:
 
     async def download_pdf(self,
                            paper_id: str,
-                           metadata: dict | None = None) -> dict:
+                           metadata: dict = None) -> dict:
         async with self.semaphore:
             clean_id, _ = self.get_pdf_path(paper_id)
             pdf_obj  = f"papers/{clean_id}/pdf/{clean_id}.pdf"

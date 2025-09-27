@@ -30,7 +30,7 @@ class PaperProcessor:
         self,
         es_host: str = "103.3.247.120:9200",
         bge_model: str = "BAAI/bge-large-en-v1.5",
-        chunk_size: int = 512,
+        chunk_size: int = 1024,
         chunk_overlap: int = 100,
         json_metadata_dir: str = "papers/metadata/paper_id.jsons",
         # minio_endpoint: str = "103.3.247.120:9002",
@@ -104,7 +104,7 @@ class PaperProcessor:
 
             # Ensure categories is a list
             if not categories:
-                categories = ['cs.AI']  # Default category
+                categories = ['cs.CL']  # Default category
 
             # Extract publish date from ArXiv ID if not in JSON
             publish_date = json_metadata.get('publish_date')
