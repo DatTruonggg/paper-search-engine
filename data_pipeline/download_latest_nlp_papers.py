@@ -116,82 +116,39 @@ class NLPPaperDownloader:
     #         json.dump(data, f, ensure_ascii=False, indent=2)
     #     return path
 
-    async def run(self,
-                  papers: int = 500,
-                  use_categories: bool = True, 
-                  use_keywords: bool = True,
-                  min_key_matches: int = 1,
-                  limit_dataset_lines: Optional[int] = None): 
-        # 1. Ensure dataset 
+    async def run(self, use_categories: bool = True, limit_dataset_lines: Optional[int] = None):
         self.ensure_dataset_available(object_name="arxiv-metadata-oai-snapshot.json")
-        
-        # 2. Load dataset
         df = self.load_dataset_from_minio(object_name="arxiv-metadata-oai-snapshot.json", limit_lines=limit_dataset_lines)
-        if df.empty:
-            log.error(f"[DOWNLOAD] Empty dataset loaded.")
-            return []
-        log.info(f"[DOWNLOAD] Dataset columns: {list(df.columns)[:15]} ... total={len(df.columns)}")
 
-        # 3. Filter
-        filtered_df = self.pipeline.filter_nlp_papers_advanced(df,
-                                                               use_categories,
-                                                               use_keywords,
-                                                               min_key_matches,
-                                                               papers)
-        log.info(f"[DOWNLOAD] Filtered NLP papers: {len(filtered_df):,}")
+        if df.empty:
+            log.error("[DOWNLOAD] Empty dataset")
+            return []
+
+        filtered_df = self.pipeline.filter_nlp_papers_advanced(df, use_categories)
+        log.info(f"[DOWNLOAD] Filtered: {len(filtered_df):,} papers")
 
         if filtered_df.empty:
-            log.warning(f"[DOWNLOAD] No papers matched criteria")
             return []
-        
-        # 4. 
-        #analysis = self.pipeline.analyze_nlp_filtering_results(filtered_df)
-        
-        # 5. Prepare list for downloader
-        papers_to_download: List[Dict] = []
-        for _, row in filtered_df.iterrows():
-            papers_to_download.append({
-                "id": row.get("id", ""),
-                "title": row.get("title", ""),
-                "authors": row.get("authors", ""),
-                "abstract": row.get("abstract", ""),
-                "categories": row.get("categories", ""),
-                "year": row.get("year", None),
-                "matched_keywords": row.get("matched_nlp_keywords", []),
-                "keyword_count": row.get("keyword_match_count", 0)
-            })
 
-        # 6. Download PDFs -> Minio
-        log.info(f"[DOWNLOAD] Starting PDF downloads for {len(papers_to_download)} papers...")
+        papers_to_download = [{"id": row.get("id"), "title": row.get("title"),
+                              "authors": row.get("authors"), "abstract": row.get("abstract"),
+                              "categories": row.get("categories")} for _, row in filtered_df.iterrows()]
+
+        log.info(f"[DOWNLOAD] Downloading {len(papers_to_download)} PDFs...")
         results = await self.pdf_downloader.download_batch(papers_to_download)
 
-        # 7. Log Summeries 
-
-        success = sum(1 for r in results if r.get("status") == "success")
-        skipped = sum(1 for r in results if r.get("status") == "skipped")
-        failed = sum(1 for r in results if r.get("status") not in ("success", "skipped"))
-        summary = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "requested": len(papers_to_download),
-            "success": success,
-            "skipped": skipped,
-            "failed": failed
-        }
-        # summary_path = self.save_json(summary, "download_summary")
-        # log.info(f"[PDF] Summary saved: {summary_path} ({summary})")
-        log.info("DONE")
+        summary = {"timestamp": datetime.utcnow().isoformat() + "Z",
+                   "requested": len(papers_to_download),
+                   "success": sum(1 for r in results if r.get("status") == "success"),
+                   "skipped": sum(1 for r in results if r.get("status") == "skipped"),
+                   "failed": sum(1 for r in results if r.get("status") not in ("success", "skipped"))}
+        log.info(f"[DOWNLOAD] Complete: {summary}")
         return summary
 
 
 async def main():
     downloader = NLPPaperDownloader()
-    results = await downloader.run(
-        papers=1000,
-        use_categories=True,
-        use_keywords=False,
-        min_key_matches=1,
-        limit_dataset_lines=None  # override here if needed
-    )
+    results = await downloader.run(use_categories=True, limit_dataset_lines=None)
     log.info(f"[DONE] Total results: {results}")
 
 if __name__ == "__main__":

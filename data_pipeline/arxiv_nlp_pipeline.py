@@ -266,104 +266,33 @@ class ArxivDataPipeline:
         
         return len(matched_keywords) > 0, matched_keywords
     
-    def filter_nlp_papers_advanced(self, df: pd.DataFrame, 
-                                  use_categories: bool = True,
-                                  use_keywords: bool = True,
-                                  min_keyword_matches: int = 1,
-                                  target_papers: int = 1000) -> pd.DataFrame:
-        log.info("Starting advanced NLP paper filtering with early stopping...")
+    def filter_nlp_papers_advanced(self, df: pd.DataFrame, use_categories: bool = True) -> pd.DataFrame:
+        log.info("Filtering NLP papers by category...")
         original_count = len(df)
-        
-        # Step 1: Extract dates for sorting
-        log.info("Extracting dates for chronological sorting...")
+
         if 'update_date' in df.columns:
             df['sort_date'] = pd.to_datetime(df['update_date'], errors='coerce')
         elif 'versions' in df.columns:
             df['sort_date'] = df['versions'].apply(
                 lambda x: pd.to_datetime(x[-1]['created'] if x and len(x) > 0 else None, errors='coerce')
-                if pd.notna(x) else None
-            )
+                if pd.notna(x) else None)
         else:
-            log.warning("No date field available for sorting")
             df['sort_date'] = pd.NaT
-        
-        # Step 2: Category-based filtering (fast)
+
         if use_categories:
             log.info(f"Filtering by categories: {self.nlp_categories}")
-            category_mask = df['categories'].apply(
-                lambda x: any(cat in x.split() if pd.notna(x) else [] for cat in self.nlp_categories)
-            )
-            df = df[category_mask].copy()
-            log.info(f"After category filtering: {len(df):,} papers")
-        
-        # Step 3: Sort by date (newest first)
-        df = df.sort_values('sort_date', ascending=False, na_position='last')
-        log.info(f"Sorted papers by date (newest first)")
-
-        # Step 4: Apply keyword filtering incrementally until we have enough papers
-        # Memory optimization: keep only row indices + keyword info instead of copying entire row dicts.
-        matched_indices: List[int] = []
-        matched_keywords_map: Dict[int, List[str]] = {}
-
-        if use_keywords:
-            log.info(f"Applying keyword filtering incrementally (target: {target_papers} papers)...")
-            
-            batch_size = 1000  # Process in batches for efficiency
-            total_processed = 0
-            
-            for start_idx in range(0, len(df), batch_size):
-                if len(matched_indices) >= target_papers:
-                    break
-                    
-                end_idx = min(start_idx + batch_size, len(df))
-                batch_df = df.iloc[start_idx:end_idx]
-                total_processed = end_idx
-                
-                # Check keywords for this batch
-                for idx, row in batch_df.iterrows():
-                    title_has_kw, title_keywords = self.contains_nlp_keywords(row['title'])
-                    abstract_has_kw, abstract_keywords = self.contains_nlp_keywords(row['abstract'])
-                    if not (title_has_kw or abstract_has_kw):
-                        continue
-                    all_keywords = list(set(title_keywords + abstract_keywords))
-                    if len(all_keywords) >= min_keyword_matches:
-                        matched_indices.append(idx)
-                        matched_keywords_map[idx] = all_keywords
-                        if len(matched_indices) >= target_papers:
-                            log.info(f"Reached target of {target_papers} papers after processing {total_processed:,} papers")
-                            break
-                
-                if total_processed % 10000 == 0:
-                    log.info(f"Processed {total_processed:,} papers, found {len(matched_indices)} matching papers so far...")
-            
-            if matched_indices:
-                filtered_df = df.loc[matched_indices].copy()
-                # Attach keyword columns
-                filtered_df['matched_nlp_keywords'] = [matched_keywords_map[i] for i in matched_indices]
-                filtered_df['keyword_match_count'] = filtered_df['matched_nlp_keywords'].apply(len)
-            else:
-                filtered_df = pd.DataFrame()
-            log.info(f"After keyword filtering: {len(filtered_df):,} papers (processed {total_processed:,} papers)")
+            mask = df['categories'].apply(
+                lambda x: any(cat in x.split() if pd.notna(x) else [] for cat in self.nlp_categories))
+            filtered_df = df[mask].copy()
+            log.info(f"After category filtering: {len(filtered_df):,} papers")
         else:
-            # No keyword filtering, just take top papers by date
-            filtered_df = df.head(target_papers).copy()
-        
-        # Add filtering metadata
-        if not filtered_df.empty:
-            filtered_df['filter_method'] = 'advanced_incremental'
-            filtered_df['used_categories'] = use_categories
-            filtered_df['used_keywords'] = use_keywords
-            
-            # Add year extraction
-            if 'sort_date' in filtered_df.columns:
-                filtered_df['year'] = filtered_df['sort_date'].dt.year
-        
-        log.info(f"\nFiltering Summary:")
-        log.info(f"Original papers: {original_count:,}")
-        log.info(f"Papers after category filter: {len(df):,}")
-        log.info(f"Final filtered papers: {len(filtered_df):,}")
-        log.info(f"Early stopping saved processing: {len(df) - total_processed if use_keywords else 0:,} papers")
-        
+            filtered_df = df.copy()
+
+        filtered_df = filtered_df.sort_values('sort_date', ascending=False, na_position='last')
+        if 'sort_date' in filtered_df.columns:
+            filtered_df['year'] = filtered_df['sort_date'].dt.year
+
+        log.info(f"Filtering Summary: {original_count:,} -> {len(filtered_df):,} papers")
         return filtered_df
     
     def get_latest_papers(self, df: pd.DataFrame, limit: int = 1000) -> pd.DataFrame:
