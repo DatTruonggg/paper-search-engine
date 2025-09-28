@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
-import { ResearchSessionSidebar, type ResearchSession } from "@/components/research-session-sidebar"
+import { type ResearchSession } from "@/components/research-session-sidebar"
 import {
   MainSearchInterface,
   type SearchFilters,
@@ -11,7 +11,7 @@ import {
 import { PaperResultsPanel, type PaperResult } from "@/components/paper-results-panel"
 import { ChatMessage, type MessageWithCitations } from "@/components/chat-message"
 import { Input } from "@/components/ui/input"
-import { Menu, X, Search, MessageSquare, ArrowLeft, Bot } from "lucide-react"
+import { Menu, X, Search, Bot } from "lucide-react"
 import { ResearchService, type QAResponse } from "@/lib/research-service"
 import { apiFetch } from "@/lib/apiClient"
 import Link from "next/link"
@@ -107,17 +107,79 @@ export default function QAPage() {
     setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, title: newTitle } : s)))
   }
 
-  // Làm sạch answer: loại bỏ tham chiếu (Chunk x, Figure y, ...)
   const cleanAnswerText = (text: string): string => {
     if (!text) return text
     let out = text
-    // Xóa các ngoặc đơn chỉ chứa tham chiếu Chunk/Figure/Table/Image (có thể nhiều mục, cách nhau bởi dấu phẩy)
     out = out.replace(/\s*\((?:\s*(?:Chunk\s*\d+|Figure\s*\d+|Fig\.?\s*\d+|Table\s*\d+|Image\s*\d+))(?:\s*,\s*(?:Chunk\s*\d+|Figure\s*\d+|Fig\.?\s*\d+|Table\s*\d+|Image\s*\d+))*\)\s*/gi, ' ')
-    // Thu gọn khoảng trắng thừa
     out = out.replace(/\s{2,}/g, ' ')
-    // Xóa khoảng trắng trước dấu câu
     out = out.replace(/\s+([.,;:!?])/g, '$1')
     return out.trim()
+  }
+
+  
+  const normalizeCitations = (text: string): string => {
+    return String(text || "")
+      .replace(/\[(\d+)\[(\d+)\]/g, "[$1][$2]")
+      .replace(/\[(\d+)(?=\[\d+\])/g, "[$1]")
+      .replace(/\[(\d+)\s+\[(\d+)\]/g, "[$1][$2]")
+      .replace(/\]\s+\[(\d+)\]/g, "[$1]")
+      .replace(/\[\s*(\d+)\s*\]\s*\[\s*(\d+)\s*\]/g, "[$1][$2]")
+  }
+
+  // Shared helpers to avoid duplication across ASTA mappers
+  type CitationIndex = Map<string, { idx: number; title?: string }>
+
+  const buildCitationIndex = (sections: any[]): { citationIndex: CitationIndex; nextIdx: { value: number } } => {
+    const citationIndex: CitationIndex = new Map()
+    const nextIdx = { value: 1 }
+    sections.forEach((s) => {
+      const cites: any[] = Array.isArray(s?.citations) ? s.citations : []
+      cites.forEach((c) => {
+        const p = c?.paper || {}
+        const id = String(p?.corpus_id ?? p?.corpusId ?? "")
+        if (id && !citationIndex.has(id)) {
+          citationIndex.set(id, { idx: nextIdx.value++, title: p?.title })
+        }
+      })
+    })
+    return { citationIndex, nextIdx }
+  }
+
+  const replacePaperTagsShared = (
+    text: string,
+    citationIndex: CitationIndex,
+    nextIdx: { value: number },
+  ): string => {
+    let out = String(text || "")
+      .replace(/<Model[^>]*>/gi, "")
+      .replace(/<\/Model>/gi, "")
+      .replace(/\[\[[^\]]*\]\]?/g, "")
+      .replace(/\s*---+\s*/g, "\n\n")
+    const paperTag = /<Paper\s+[^>]*?(?:corpusId="([^"]*)")[^>]*?(?:arxivId="([^"]*)")?[^>]*?>/gi
+    out = out
+      .replace(paperTag, (_m, corpusId: string, arxivId?: string) => {
+        const id = String(arxivId || corpusId || "").trim()
+        if (!id) return ""
+        const entry = citationIndex.get(id) || (() => {
+          const newIdx = nextIdx.value++
+          const e = { idx: newIdx, title: undefined as string | undefined }
+          citationIndex.set(id, e)
+          return e
+        })()
+        return `[${entry.idx}]`
+      })
+      .replace(/<\/Paper>/gi, "")
+    return out
+  }
+
+  const sentenceWrapShared = (t: string): string => {
+    return String(t || "")
+      .replace(/\s*\n\s*/g, ' ')
+      .replace(/\.(\s+)(?=[A-Z\[(])/g, '.\n')
+      .replace(/\?\s+/g, '?\n')
+      .replace(/!\s+/g, '!\n')
+      .replace(/[ \t]+/g, ' ')
+      .trim()
   }
 
   // Helper: map QAResponse -> Assistant Chat Message
@@ -141,63 +203,16 @@ export default function QAPage() {
   // Helper: map ASTA ScholarQA result -> Assistant Chat Message
   const mapASTAResultToAssistant = (result: any): MessageWithCitations => {
     const sections: any[] = Array.isArray(result?.sections) ? result.sections : []
-
-    // Build a stable citation index map in order of first appearance
-    const citationIndex = new Map<string, { idx: number; title?: string }>()
-    let nextIdx = 1
-    sections.forEach((s) => {
-      const cites: any[] = Array.isArray(s?.citations) ? s.citations : []
-      cites.forEach((c) => {
-        const p = c?.paper || {}
-        const id = String(p?.corpus_id ?? p?.corpusId ?? "")
-        if (id && !citationIndex.has(id)) {
-          citationIndex.set(id, { idx: nextIdx++, title: p?.title })
-        }
-      })
-    })
-
-    // Replace <Paper ...> tags with numbered references [n] (plain inline), links only in References
-    const replacePaperTags = (text: string): string => {
-      // strip model tags and noisy artifacts
-      let out = text.replace(/<Model[^>]*>/gi, "").replace(/<\/Model>/gi, "")
-      // drop malformed double-bracket artifacts like [[ ... ]]
-      out = out.replace(/\[\[[^\]]*\]\]?/g, "")
-      // remove long markdown-like separators
-      out = out.replace(/\s*---+\s*/g, "\n\n")
-      const paperTag = /<Paper\s+[^>]*?(?:corpusId="([^"]*)")[^>]*?(?:arxivId="([^"]*)")?[^>]*?>/gi
-      out = out.replace(paperTag, (_m, corpusId: string, arxivId?: string) => {
-        const id = String(arxivId || corpusId || "").trim()
-        if (!id) return ""
-        const entry = citationIndex.get(id) || (() => {
-          const newIdx = nextIdx++
-          const e = { idx: newIdx, title: undefined as string | undefined }
-          citationIndex.set(id, e)
-          return e
-        })()
-        return ` [${entry.idx}] `
-      }).replace(/<\/Paper>/gi, "")
-      // normalize adjacent bracket numbers to have commas: "][" => "], ["
-      out = out.replace(/\]\s*\[(\d+)\]/g, '], [$1]')
-      return out
-    }
-
-    const sentenceWrap = (t: string): string => {
-      return t
-        .replace(/\s*\n\s*/g, ' ')
-        .replace(/\.(\s+)(?=[A-Z\[(])/g, '.\n')
-        .replace(/\?\s+/g, '?\n')
-        .replace(/!\s+/g, '!\n')
-        .replace(/[ \t]+/g, ' ')
-        .trim()
-    }
+    const { citationIndex, nextIdx } = buildCitationIndex(sections)
 
     const content = sections
       .map((s) => {
         const title = s?.title ? `**${s.title}**\n\n` : ""
         const tldr = s?.tldr ? `${s.tldr}\n\n` : ""
         const raw = s?.text || ""
-        const text = sentenceWrap(replacePaperTags(raw))
-        // Giữ newline sau title để đoạn văn xuống dòng rõ ràng
+        const text = sentenceWrapShared(
+          normalizeCitations(replacePaperTagsShared(raw, citationIndex, nextIdx))
+        )
         return `${title}${tldr}${text}`
       })
       .filter(Boolean)
@@ -213,13 +228,8 @@ export default function QAPage() {
 
     // Clean punctuation spacing around references and citation brackets; remove (n sources)
     let finalContent = content
-      .replace(/\(\s*\d+\s+sources?\s*\)/gi, '')
-      .replace(/\],\s*\[(\d+)\]/g, '] [$1]')
-      .replace(/\]\s+\[(\d+)\]/g, ' [$1]')
-      .replace(/\s*\]\s*\./g, '.')
-      .replace(/,\s*(\[\d+\])/g, ' $1')
-      .replace(/\],\s*(\[\d+\])/g, ' $1')
-      .replace(/\[(\d+)(?!\])/g, '[$1]');
+    .replace(/\(\s*\d+\s+sources?\s*\)/gi, '')
+    // .replace(/\]\s*\[(\d+)\]/g, '], [$1]');
 
     if (biblioLines.length > 0) {
       finalContent = `${finalContent}\n\nReferences:\n- ${biblioLines.join("\n- ")}`
@@ -244,6 +254,51 @@ export default function QAPage() {
       content: cleanAnswerText(finalContent || ""),
       timestamp: new Date(),
       sources,
+    }
+  }
+
+  /**
+   * Build a single assistant message that contains collapsible sections.
+   * Each ASTA section becomes an accordion item (title -> full text), and
+   * a trailing References section lists all citations with links.
+   */
+  const mapASTAResultToCollapsibleMessage = (result: any): MessageWithCitations => {
+    const sections: any[] = Array.isArray(result?.sections) ? result.sections : []
+
+    const { citationIndex, nextIdx } = buildCitationIndex(sections)
+
+    const sectionBlocks = sections.map((s) => {
+      const title = s?.title || undefined
+      const summary = s?.tldr ? cleanAnswerText(s.tldr) : undefined
+      const text = sentenceWrapShared(normalizeCitations(replacePaperTagsShared(s?.text || "", citationIndex, nextIdx)))    
+      return { title, content: cleanAnswerText(text), summary }
+    })
+
+    // Build references content
+    const biblioLines = Array.from(citationIndex.entries())
+      .sort((a, b) => a[1].idx - b[1].idx)
+      .map(([id, meta]) => {
+        const title = meta.title || id
+        return `[${meta.idx}] ${title}`
+      })
+
+    if (biblioLines.length > 0) {
+      let referencesContent = `- ${biblioLines.join("\n- ")}`
+      referencesContent = referencesContent.replace(/^- \[(\d+)\]\s+(.+)$/gm, (_m, n, t) => `- [[${n}](https://arxiv.org/abs/${Array.from(citationIndex.keys())[Number(n)-1]})] ${t}`)
+      sectionBlocks.push({ title: "References", content: referencesContent, summary: undefined })
+    }
+
+    // Fallback: when no structured sections provided by backend
+    if (sectionBlocks.length === 0 && result?.answer) {
+      return mapASTAResultToAssistant(result)
+    }
+
+    return {
+      id: `assistant_${Date.now()}`,
+      role: "assistant",
+      content: "", // content is rendered via sections
+      timestamp: new Date(),
+      sections: sectionBlocks,
     }
   }
 
@@ -273,7 +328,7 @@ export default function QAPage() {
         body: JSON.stringify({ query: question }),
         timeoutMs: 0,
       })
-      setMessages((prev) => [...prev, mapASTAResultToAssistant(asta.result)])
+      setMessages((prev) => [...prev, mapASTAResultToCollapsibleMessage(asta.result)])
 
       if (currentSession) {
         setSessions((prev) =>
@@ -313,7 +368,7 @@ export default function QAPage() {
         body: JSON.stringify({ query: text }),
         timeoutMs: 0,
       })
-      setMessages((prev) => [...prev, mapASTAResultToAssistant(asta.result)])
+      setMessages((prev) => [...prev, mapASTAResultToCollapsibleMessage(asta.result)])
     } catch (e) {
       console.error('[QA] chat:error', e)
       setQaError((e as Error)?.message || "Unknown error")
@@ -589,5 +644,3 @@ export default function QAPage() {
     </div>
   )
 }
-
-
