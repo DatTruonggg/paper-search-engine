@@ -1,0 +1,117 @@
+version: '3.8'
+
+services:
+  paper-search-elasticsearch:
+    image: elasticsearch:8.11.0
+    container_name: paper-search-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+      - cluster.name=paper-search-cluster
+      - node.name=paper-search-node
+    ports:
+      - "9202:9200"  # Changed port to avoid conflict
+      - "9302:9300"  # Changed port to avoid conflict
+    volumes:
+      - paper-search-es-data:/usr/share/elasticsearch/data
+    networks:
+      - paper-search-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  paper-search-minio:
+    image: minio/minio:latest
+    container_name: paper-search-minio
+    ports:
+      - "9002:9000"  # Changed port to avoid conflict
+      - "9003:9001"  # Changed port to avoid conflict
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_DEFAULT_BUCKETS: papers,markdown,images
+    command: server /data --console-address ":9001"
+    volumes:
+      - paper-search-minio-data:/data
+    networks:
+      - paper-search-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  paper-search-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: paper-search-backend
+    ports:
+      - "8001:8000"  # Expose backend on 8001 for frontend consumption
+    env_file:
+      - .env
+    environment:
+      - ES_HOST=paper-search-elasticsearch:9200
+      - MINIO_ENDPOINT=paper-search-minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - BGE_MODEL_NAME=BAAI/bge-large-en-v1.5
+      - PYTHONPATH=/app
+    volumes:
+      - ./backend:/app/backend
+      - ./data_pipeline:/app/data_pipeline
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./models:/app/models
+    networks:
+      - paper-search-net
+    depends_on:
+      paper-search-elasticsearch:
+        condition: service_healthy
+      paper-search-minio:
+        condition: service_healthy
+    command: >-
+      sh -c "
+      echo 'Waiting for Elasticsearch...';
+      until curl -sf http://paper-search-elasticsearch:9200/_cluster/health > /dev/null; do
+        sleep 2;
+      done;
+      echo 'Elasticsearch is up.';
+      echo 'Waiting for MinIO...';
+      until curl -sf http://paper-search-minio:9000/minio/health/live > /dev/null; do
+        sleep 2;
+      done;
+      echo 'MinIO is up.';
+      uvicorn backend.api.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+  paper-search-frontend:
+    image: node:18-alpine
+    container_name: paper-search-frontend
+    working_dir: /app
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8001
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+    networks:
+      - paper-search-net
+    depends_on:
+      - paper-search-backend
+    command: sh -c "npm install && npm run dev"
+
+networks:
+  paper-search-net:
+    driver: bridge
+
+volumes:
+  paper-search-es-data:
+    driver: local
+  paper-search-minio-data:
+    driver: local
