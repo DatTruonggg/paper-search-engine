@@ -75,8 +75,7 @@ async def health_check():
 
 
 # Include all v1 routers
-from backend.api.v1 import search, papers, es, minio, agent, qa, health, ingestion, semantic_scholar_api
-
+from backend.api.v1 import search, papers, es, minio, agent, qa, health, ingestion, semantic_scholar_api, asta
 app.include_router(search.router)
 app.include_router(papers.router)
 app.include_router(es.router)
@@ -85,7 +84,9 @@ app.include_router(agent.router)
 app.include_router(qa.router)
 app.include_router(health.router)
 app.include_router(ingestion.router)
+app.include_router(asta.router)
 app.include_router(semantic_scholar_api.router)
+# app.include_router(asta.router)
 
 log.info("All API routes configured")
 

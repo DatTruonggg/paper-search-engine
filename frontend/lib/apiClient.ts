@@ -7,8 +7,11 @@ export interface ApiErrorEnvelope {
 }
 
 export async function apiFetch<T = unknown>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), init?.timeoutMs ?? 30000);
+  // Support external AbortSignal: if provided, we won't create our own controller/timeout
+  const externalSignal = init?.signal;
+  const controller = externalSignal ? undefined : new AbortController();
+  const timeoutMs = init?.timeoutMs ?? 30000;
+  const timeout = !externalSignal && timeoutMs > 0 ? setTimeout(() => (controller as AbortController).abort(), timeoutMs) : undefined;
 
   const res = await fetch(`${API_BASE}${path}`,
     {
@@ -17,10 +20,12 @@ export async function apiFetch<T = unknown>(path: string, init?: RequestInit & {
         'Content-Type': 'application/json',
         ...(init?.headers || {}),
       },
-      signal: controller.signal,
+      signal: externalSignal ?? controller?.signal,
       cache: 'no-store',
     },
-  ).finally(() => clearTimeout(timeout));
+  ).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
 
   if (!res.ok) {
     let body: ApiErrorEnvelope | undefined;

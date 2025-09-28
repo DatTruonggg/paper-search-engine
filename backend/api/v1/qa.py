@@ -169,7 +169,7 @@ async def single_paper_qa(request: SinglePaperQARequest):
             question=request.question,
             max_chunks=request.max_chunks
         )
-        
+
         return _build_api_response(response, explicit_paper_ids=[request.paper_id])
 
     except Exception as e:

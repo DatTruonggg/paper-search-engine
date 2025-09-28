@@ -47,6 +47,10 @@ The QA Agent system provides intelligent question answering capabilities for the
    - Includes image information when available
 
 5. **Configuration** (`config.py`)
+6. **ASTA Integration** (`backend/agent/asta_*.py`)
+   - `ElasticsearchAstaRetriever`: Adapter implementing ASTA `AbstractRetriever` over our ES index
+   - `AstaQAPipelineAgent`: Runs ASTA `ScholarQA` using our ES retriever + reranker
+
    - Centralized configuration for QA system
    - LLM provider settings (OpenAI, Google Gemini)
    - Retrieval and context parameters

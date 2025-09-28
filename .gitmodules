@@ -1,0 +1,3 @@
+[submodule "asta"]
+	path = asta
+	url = git@github.com:MidoriyaHero/ai2-scholarqa-lib.git
