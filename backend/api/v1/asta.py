@@ -3,27 +3,23 @@ from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, HTTPException
 
-from asta.api.scholarqa import ScholarQA, PaperFinderWithReranker, PaperFinder
-from asta.api.scholarqa.rag.retriever_base import FullTextRetriever
-from asta.api.scholarqa.rag.reranker.reranker_base import CrossEncoderScores
-from asta.api.scholarqa.llms.constants import GEMINI_25_FLASH
 from logs import log
 
-from asta.api.scholarqa.rag.reranker.modal_engine import ModalReranker
+from asta.api.scholarqa import ScholarQA, PaperFinder
+from asta.api.scholarqa.rag.retriever_base import FullTextRetriever
+from asta.api.scholarqa.llms.constants import GEMINI_25_FLASH
+
 
 
 router = APIRouter(prefix="/api/v1/asta", tags=["ASTA QA"])
-
 
 class QARequest(BaseModel):
     """Request schema for ScholarQA endpoint."""
     query: str = Field(..., min_length=1)
 
-
 class QAResult(BaseModel):
     """Response schema wrapping ScholarQA result payload."""
     result: Dict[str, Any]
-
 
 @router.post("/qa", response_model=QAResult)
 async def asta_qa(req: QARequest) -> QAResult:
@@ -39,7 +35,6 @@ async def asta_qa(req: QARequest) -> QAResult:
 
         # Build retrieval + reranking stack
         retriever = FullTextRetriever(n_retrieval=150, n_keyword_srch=25)
-        reranker = ModalReranker(app_name='<modal_app_name>', api_name='<modal_api_name>', batch_size=256, gen_options=dict())
 
         # Wrap into PaperFinder; n_rerank=-1 keeps all candidates post-rerank
         paper_finder = PaperFinder(retriever, n_rerank=-1, context_threshold=0.0)
