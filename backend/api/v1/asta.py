@@ -4,7 +4,6 @@ from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException
 
 from logs import log
-
 from asta.api.scholarqa import ScholarQA, PaperFinder
 from asta.api.scholarqa.rag.retriever_base import FullTextRetriever
 from asta.api.scholarqa.llms.constants import GEMINI_25_FLASH
