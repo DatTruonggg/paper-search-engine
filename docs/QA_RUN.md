@@ -23,6 +23,30 @@
 
 - API client `frontend/lib/apiClient.ts` accepts external `AbortSignal` and allows disabling timeouts when needed.
 
+### Install ASTA (clone upstream)
+
+If you prefer using the upstream ASTA library instead of the vendored copy, install it first:
+
+```bash
+cd paper-search-engine
+git clone https://github.com/MidoriyaHero/ai2-scholarqa-lib.git
+
+# Optional: create & activate a virtualenv
+python -m venv .venv && source .venv/bin/activate
+python -m pip install -U pip
+
+# Install ASTA library (editable)
+cd ai2-scholarqa-lib
+pip install -e .
+
+# Set LLM keys (Gemini-only is OK)
+export GEMINI_API_KEY="<your_key>"
+export GOOGLE_API_KEY="$GEMINI_API_KEY"
+
+```
+
+Reference: [ai2-scholarqa-lib upstream](https://github.com/MidoriyaHero/ai2-scholarqa-lib.git)
+
 ### How to Run
 
 1) Start Backend API (port 8001)
