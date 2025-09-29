@@ -42,8 +42,11 @@ A high-accuracy academic paper search engine using BGE embeddings, Elasticsearch
 ### 1. Setup Environment
 ```bash
 # Clone repository
-git clone <repository-url>
+git clone https://github.com/DatTruonggg/paper-search-engine.git
 cd paper-search-engine
+
+# Initialize and update submodules
+git submodule update --init --recursive
 
 # Create virtual environment
 python3 -m venv venv
@@ -52,8 +55,16 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
+# Install ASTA scholarqa package (required for QA functionality)
+cd asta/api
+pip install -e .
+cd ../..
+
 # Setup configuration
 cp .env.example .env
+# Set LLM keys (Gemini-only is OK)
+export GEMINI_API_KEY="<your_key>"
+export GOOGLE_API_KEY="$GEMINI_API_KEY"
 ```
 
 ### 2. Start Services
