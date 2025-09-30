@@ -56,6 +56,9 @@ class Config:
     ES_HOST = os.getenv("ES_HOST", "http://103.3.247.120:9202")
     ES_INDEX_NAME = os.getenv("ES_INDEX_NAME", "papers")
 
+    # Semantic Scholar API Configuration
+    S2_API_BASE_URL = os.getenv("S2_API_BASE_URL", "http://localhost:8001/graph/v1/")
+
     # BGE Embedding Configuration
     BGE_MODEL_NAME = os.getenv("BGE_MODEL_NAME", "BAAI/bge-large-en-v1.5")
     BGE_CACHE_DIR = os.getenv("BGE_CACHE_DIR", "./models")
