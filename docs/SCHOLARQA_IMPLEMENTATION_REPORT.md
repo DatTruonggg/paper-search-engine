@@ -110,25 +110,21 @@ graph TD
   - Removed unsupported `animate-in` classes
   - Added mounted state check
   - Used standard Tailwind animations only
-- **Status**: Fixed
 
 ### 2. **Backend Streaming Error**
 - **Issue**: `NameError: name 'sections' is not defined`
 - **Root Cause**: Undefined variable in progress callback
 - **Solution**: Removed undefined `sections` parameter
-- **Status**: Fixed
 
 ### 3. **JSON Parsing Issues**
 - **Issue**: Failed to parse `CompletionCost` objects
 - **Root Cause**: Missing object type handling
 - **Solution**: Enhanced `safe_json_parse` to handle `CompletionCost`
-- **Status**: Fixed
 
-### 4. **Router Classification Issues (RESOLVED)**
+### 4. **Router Classification Issues **
 - **Issue**: Complex queries incorrectly classified as "SIMPLE"
 - **Root Cause**: Conservative LLM classification
 - **Solution**: Added heuristics for automatic "STRUCTURED" detection
-- **Status**: Fixed
 
 ---
 
