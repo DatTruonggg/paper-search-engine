@@ -13,6 +13,34 @@ from elasticsearch.exceptions import RequestError
 import numpy as np
 from datetime import datetime
 
+
+def get_search_fields_for_type(search_type: str = "balanced") -> List[str]:
+    """
+    Get optimal search field boosting based on search type.
+
+    Args:
+        search_type: Type of search - "keyword", "snippet", "balanced", or "survey"
+
+    Returns:
+        List of search fields with boosting weights
+    """
+    if search_type == "keyword":
+        # For keyword/paper search: prioritize title (topical relevance)
+        return ["title^3", "abstract^2", "chunk_text"]
+
+    elif search_type == "snippet":
+        # For snippet/section search: prioritize content depth
+        return ["chunk_text^2", "abstract^1.5", "title"]
+
+    elif search_type == "survey":
+        # For survey papers: heavily boost title
+        return ["title^4", "abstract^2.5", "chunk_text"]
+
+    else:  # balanced
+        # Default balanced approach
+        return ["title^2", "abstract^2", "chunk_text^1.5"]
+
+
 class ESIndexer:
     def __init__(
         self,
@@ -107,24 +135,39 @@ class ESIndexer:
                     "chunk_end": {"type": "integer"},
                     "total_chunks": {"type": "integer"},
 
-                    # Embeddings for semantic search
+                    # Embeddings for semantic search with HNSW for KNN
                     "title_embedding": {
                         "type": "dense_vector",
                         "dims": self.embedding_dim,
                         "index": True,
-                        "similarity": "cosine"
+                        "similarity": "cosine",
+                        "index_options": {
+                            "type": "hnsw",
+                            "m": 16,
+                            "ef_construction": 100
+                        }
                     },
                     "abstract_embedding": {
                         "type": "dense_vector",
                         "dims": self.embedding_dim,
                         "index": True,
-                        "similarity": "cosine"
+                        "similarity": "cosine",
+                        "index_options": {
+                            "type": "hnsw",
+                            "m": 16,
+                            "ef_construction": 100
+                        }
                     },
                     "chunk_embedding": {
                         "type": "dense_vector",
                         "dims": self.embedding_dim,
                         "index": True,
-                        "similarity": "cosine"
+                        "similarity": "cosine",
+                        "index_options": {
+                            "type": "hnsw",
+                            "m": 16,
+                            "ef_construction": 200
+                        }
                     },
 
                     # File references
@@ -437,6 +480,223 @@ class ESIndexer:
         # Sort by score descending
         results.sort(key=lambda x: x['_score'], reverse=True)
 
+        return results
+
+    def search_papers_knn(
+        self,
+        query_embedding: np.ndarray,
+        query_text: str = None,
+        size: int = 20,
+        use_hybrid: bool = True,
+        filter_query: Dict = None
+    ) -> List[Dict]:
+        """
+        Fast KNN search on paper documents using HNSW index.
+
+        Args:
+            query_embedding: Query embedding vector
+            query_text: Optional text query for hybrid search
+            size: Number of results to return
+            use_hybrid: If True, combine KNN with BM25 using RRF
+            filter_query: Additional filters (will be merged with doc_type filter)
+
+        Returns:
+            List of paper documents sorted by relevance
+        """
+        # Convert to list if numpy array
+        if isinstance(query_embedding, np.ndarray):
+            query_embedding = query_embedding.tolist()
+
+        # Build filter list
+        filters = [{"term": {"doc_type": "paper"}}]
+        if filter_query:
+            filters.append(filter_query)
+
+        if use_hybrid and query_text:
+            # Hybrid: KNN + BM25 with RRF (Reciprocal Rank Fusion)
+            search_body = {
+                "knn": {
+                    "field": "title_embedding",
+                    "query_vector": query_embedding,
+                    "k": size,
+                    "num_candidates": size * 2,
+                    "filter": filters
+                },
+                "query": {
+                    "bool": {
+                        "should": [
+                            {"match": {"title": {"query": query_text, "boost": 3}}},
+                            {"match": {"abstract": {"query": query_text, "boost": 1}}}
+                        ],
+                        "filter": filters
+                    }
+                },
+                "rank": {
+                    "rrf": {}  # Reciprocal Rank Fusion for combining KNN + BM25
+                },
+                "size": size,
+                "_source": {"excludes": ["*_embedding"]}
+            }
+            log.info(f"[KNN] Hybrid paper search: query='{query_text[:]}...', size={size}")
+        else:
+            # Pure KNN (semantic only)
+            search_body = {
+                "knn": {
+                    "field": "title_embedding",
+                    "query_vector": query_embedding,
+                    "k": size,
+                    "num_candidates": size * 2,
+                    "filter": filters
+                },
+                "size": size,
+                "_source": {"excludes": ["*_embedding"]}
+            }
+            log.info(f"[KNN] Pure semantic paper search: size={size}")
+
+        # Execute search
+        response = self.es.search(index=self.index_name, body=search_body)
+
+        # Extract results
+        results = []
+        for hit in response['hits']['hits']:
+            paper_data = hit['_source']
+            paper_data['_score'] = hit['_score']
+            results.append(paper_data)
+
+        log.info(f"[KNN] Paper search returned {len(results)} results")
+        return results
+
+    def search_chunks_knn(
+        self,
+        query_embedding: np.ndarray,
+        query_text: str = None,
+        size: int = 20,
+        max_chunks_per_paper: int = 5,
+        use_hybrid: bool = True,
+        filter_query: Dict = None
+    ) -> List[Dict]:
+        """
+        Fast KNN search on chunk documents with paper aggregation using HNSW index.
+
+        Searches all chunks directly (NO pre-filtering by papers!) then aggregates
+        to paper level. This avoids pre-filter bias where relevant chunks in papers
+        with generic titles might be missed.
+
+        Args:
+            query_embedding: Query embedding vector
+            query_text: Optional text query for hybrid search
+            size: Number of papers to return
+            max_chunks_per_paper: Max chunks to consider per paper for scoring
+            use_hybrid: If True, combine KNN with BM25 using RRF
+            filter_query: Additional filters (will be merged with doc_type filter)
+
+        Returns:
+            List of papers with their best matching chunks
+        """
+        # Convert to list if numpy array
+        if isinstance(query_embedding, np.ndarray):
+            query_embedding = query_embedding.tolist()
+
+        # Get more chunks than papers to ensure good coverage
+        k_chunks = size * max_chunks_per_paper
+
+        # Build filter list
+        filters = [{"term": {"doc_type": "chunk"}}]
+        if filter_query:
+            filters.append(filter_query)
+
+        if use_hybrid and query_text:
+            # Hybrid KNN + BM25 with RRF
+            search_body = {
+                "knn": {
+                    "field": "chunk_embedding",
+                    "query_vector": query_embedding,
+                    "k": k_chunks,
+                    "num_candidates": k_chunks * 2,
+                    "filter": filters
+                },
+                "query": {
+                    "bool": {
+                        "should": [
+                            {"match": {"chunk_text": query_text}}
+                        ],
+                        "filter": filters
+                    }
+                },
+                "rank": {"rrf": {}},
+                "size": 0,  # Don't return individual chunks, only aggregations
+                "aggs": {
+                    "papers": {
+                        "terms": {
+                            "field": "paper_id",
+                            "size": size,
+                            "order": {"max_score": "desc"}
+                        },
+                        "aggs": {
+                            "max_score": {"max": {"script": "_score"}},
+                            "best_chunk": {
+                                "top_hits": {
+                                    "size": 1,
+                                    "sort": [{"_score": {"order": "desc"}}],
+                                    "_source": {"excludes": ["*_embedding"]}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            log.info(f"[KNN] Hybrid chunk search: query='{query_text[:]}...', size={size}, k_chunks={k_chunks}")
+        else:
+            # Pure KNN
+            search_body = {
+                "knn": {
+                    "field": "chunk_embedding",
+                    "query_vector": query_embedding,
+                    "k": k_chunks,
+                    "num_candidates": k_chunks * 2,
+                    "filter": filters
+                },
+                "size": 0,
+                "aggs": {
+                    "papers": {
+                        "terms": {
+                            "field": "paper_id",
+                            "size": size,
+                            "order": {"max_score": "desc"}
+                        },
+                        "aggs": {
+                            "max_score": {"max": {"script": "_score"}},
+                            "best_chunk": {
+                                "top_hits": {
+                                    "size": 1,
+                                    "sort": [{"_score": {"order": "desc"}}],
+                                    "_source": {"excludes": ["*_embedding"]}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            log.info(f"[KNN] Pure semantic chunk search: size={size}, k_chunks={k_chunks}")
+
+        # Execute search
+        response = self.es.search(index=self.index_name, body=search_body)
+
+        # Extract aggregated results
+        results = []
+        for bucket in response['aggregations']['papers']['buckets']:
+            if 'best_chunk' not in bucket or 'hits' not in bucket['best_chunk'] or 'hits' not in bucket['best_chunk']['hits']:
+                continue
+
+            if len(bucket['best_chunk']['hits']['hits']) == 0:
+                continue
+
+            paper_data = bucket['best_chunk']['hits']['hits'][0]['_source']
+            paper_data['_score'] = bucket['max_score']['value']
+            paper_data['matching_chunks'] = bucket['doc_count']
+            results.append(paper_data)
+
+        log.info(f"[KNN] Chunk search returned {len(results)} papers from {response.get('hits', {}).get('total', {}).get('value', 0)} chunks")
         return results
 
     def get_document(self, paper_id: str) -> Optional[Dict]:

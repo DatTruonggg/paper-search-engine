@@ -154,7 +154,7 @@ class DocumentChunker:
         for i, sentence in enumerate(sentences):
             sentence_tokens = self.count_tokens(sentence)
 
-            # If single sentence exceeds chunk size, split it
+            # If single sentence exceeds chunk size, split it into multiple chunks
             if sentence_tokens > self.chunk_size:
                 # Save current chunk if not empty
                 if current_chunk:
@@ -167,22 +167,63 @@ class DocumentChunker:
                         token_count=current_tokens
                     ))
                     chunk_index += 1
+                    chunk_start_pos += len(chunk_text) + 1
 
-                # Split long sentence
-                chunk_text = sentence[:self.chunk_size * 4]  # Approximate char count
-                chunks.append(Chunk(
-                    text=chunk_text,
-                    start_pos=chunk_start_pos + len(' '.join(current_chunk)),
-                    end_pos=chunk_start_pos + len(' '.join(current_chunk)) + len(chunk_text),
-                    chunk_index=chunk_index,
-                    token_count=self.count_tokens(chunk_text)
-                ))
-                chunk_index += 1
+                # Split long sentence into multiple chunks without data loss
+                words = sentence.split()
+                temp_chunk = []
+                temp_tokens = 0
+
+                for word in words:
+                    word_tokens = self.count_tokens(word)
+
+                    if temp_tokens + word_tokens > self.chunk_size:
+                        if temp_chunk:
+                            # Save chunk
+                            chunk_text = ' '.join(temp_chunk)
+                            chunks.append(Chunk(
+                                text=chunk_text,
+                                start_pos=chunk_start_pos,
+                                end_pos=chunk_start_pos + len(chunk_text),
+                                chunk_index=chunk_index,
+                                token_count=temp_tokens
+                            ))
+                            chunk_index += 1
+                            chunk_start_pos += len(chunk_text) + 1
+                            temp_chunk = [word]
+                            temp_tokens = word_tokens
+                        else:
+                            # Single word exceeds chunk size - force include
+                            chunk_text = word
+                            chunks.append(Chunk(
+                                text=chunk_text,
+                                start_pos=chunk_start_pos,
+                                end_pos=chunk_start_pos + len(chunk_text),
+                                chunk_index=chunk_index,
+                                token_count=word_tokens
+                            ))
+                            chunk_index += 1
+                            chunk_start_pos += len(chunk_text) + 1
+                    else:
+                        temp_chunk.append(word)
+                        temp_tokens += word_tokens
+
+                # Save remaining words from long sentence
+                if temp_chunk:
+                    chunk_text = ' '.join(temp_chunk)
+                    chunks.append(Chunk(
+                        text=chunk_text,
+                        start_pos=chunk_start_pos,
+                        end_pos=chunk_start_pos + len(chunk_text),
+                        chunk_index=chunk_index,
+                        token_count=temp_tokens
+                    ))
+                    chunk_index += 1
+                    chunk_start_pos += len(chunk_text) + 1
 
                 # Reset for next chunk
                 current_chunk = []
                 current_tokens = 0
-                chunk_start_pos += len(chunk_text) + 1
 
             # If adding sentence exceeds chunk size, create new chunk
             elif current_tokens + sentence_tokens > self.chunk_size:
