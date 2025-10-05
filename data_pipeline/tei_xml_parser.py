@@ -56,6 +56,9 @@ class TEIXMLParser:
                 log.warning(f"Skipping {paper_id}: missing both title and abstract")
                 return None
 
+            # Extract or infer publish date from arXiv ID (format: YYMM.NNNNN)
+            publish_date = self._extract_or_infer_date(root, paper_id)
+
             paper_data = {
                 'paper_id': paper_id,
                 'title': title,
@@ -64,7 +67,7 @@ class TEIXMLParser:
                 'categories': keywords,  # Using keywords as categories
                 'content': content,
                 'references': references,
-                'xml_path': str(xml_path)
+                'publish_date': publish_date
             }
 
             log.debug(f"Parsed paper {paper_id}: {len(content)} chars, {len(authors)} authors")
@@ -194,6 +197,31 @@ class TEIXMLParser:
                 texts.append(child.tail)
 
         return ' '.join(texts).strip()
+
+    def _extract_or_infer_date(self, root: ET.Element, paper_id: str) -> str:
+        """
+        Extract publication date from TEI or infer from arXiv ID.
+        arXiv ID format: YYMM.NNNNN (e.g., 0704.2083 = April 2007)
+        """
+        # Try to extract from XML first
+        date_elem = root.find('.//tei:monogr/tei:imprint/tei:date', self.NS)
+        if date_elem is not None and date_elem.get('when'):
+            return date_elem.get('when')
+        if date_elem is not None and date_elem.text and date_elem.text.strip():
+            return date_elem.text.strip()
+
+        # Infer from arXiv ID format: YYMM.NNNNN
+        import re
+        match = re.match(r'(\d{2})(\d{2})\.', paper_id)
+        if match:
+            yy, mm = match.groups()
+            # Convert YY to full year (assuming 2000+ for 00-99)
+            year = int(yy)
+            year = 1900 + year if year >= 91 else 2000 + year
+            month = int(mm)
+            return f"{year}-{month:02d}-01"
+
+        return None
 
 
 def main():

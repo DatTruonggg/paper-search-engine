@@ -90,11 +90,14 @@ class BatchIndexer:
             'authors': paper_data['authors'],
             'abstract': paper_data['abstract'],
             'categories': paper_data['categories'],
+            'publish_date': paper_data.get('publish_date'),
             'doc_type': 'paper',
             'title_embedding': title_embedding,
             'abstract_embedding': abstract_embedding,
             'total_chunks': len(content_chunks),
-            'xml_path': paper_data['xml_path']
+            'word_count': len(paper_data['content'].split()) if paper_data.get('content') else 0,
+            'pdf_path': f"https://arxiv.org/pdf/{paper_data['paper_id']}",
+            'downloaded_at': datetime.now().isoformat()
         }
 
         # Create chunk documents (doc_type="chunk")
@@ -106,6 +109,7 @@ class BatchIndexer:
                 'authors': paper_data['authors'],
                 'abstract': paper_data['abstract'],
                 'categories': paper_data['categories'],
+                'publish_date': paper_data.get('publish_date'),
                 'doc_type': 'chunk',
                 'chunk_index': chunk.chunk_index,
                 'chunk_text': chunk.text,
@@ -113,7 +117,9 @@ class BatchIndexer:
                 'chunk_end': chunk.end_pos,
                 'total_chunks': len(content_chunks),
                 'chunk_embedding': embedding,
-                'xml_path': paper_data['xml_path']
+                'word_count': len(paper_data['content'].split()) if paper_data.get('content') else 0,
+                'pdf_path': f"https://arxiv.org/pdf/{paper_data['paper_id']}",
+                'downloaded_at': datetime.now().isoformat()
             }
             chunk_docs.append(chunk_doc)
 
