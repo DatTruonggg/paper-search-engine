@@ -268,18 +268,28 @@ class ESIndexer:
             }
             actions.append(action)
 
-        # Bulk index
-        success, failed = helpers.bulk(
+        # Bulk index with detailed error tracking
+        success = 0
+        errors = []
+
+        for ok, item in helpers.streaming_bulk(
             self.es,
             actions,
             chunk_size=batch_size,
-            request_timeout=60
-        )
+            request_timeout=60,
+            raise_on_error=False
+        ):
+            if ok:
+                success += 1
+            else:
+                errors.append(item)
 
-        log.info(f"Indexed {success} documents, {len(failed)} failed")
+        log.info(f"Indexed {success} documents, {len(errors)} failed")
 
-        if failed:
-            log.error(f"Failed documents: {failed[:5]}")  # Log first 5 failures
+        if errors:
+            log.error(f"First error details: {errors[0]}")
+            for err in errors[:3]:
+                log.error(f"Failed doc: {err}")
 
     def search(
         self,

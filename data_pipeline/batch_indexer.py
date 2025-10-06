@@ -132,7 +132,8 @@ class BatchIndexer:
         self,
         xml_files: List[str],
         create_index: bool = False,
-        force_recreate: bool = False
+        force_recreate: bool = False,
+        skip_existing: bool = True
     ):
         """
         Index a collection of papers from XML files.
@@ -141,6 +142,7 @@ class BatchIndexer:
             xml_files: List of XML file paths
             create_index: Whether to create index if it doesn't exist
             force_recreate: Whether to recreate index from scratch
+            skip_existing: Whether to skip papers already in database
         """
         # Create index if needed
         if create_index:
@@ -152,6 +154,7 @@ class BatchIndexer:
         # Track statistics
         stats = {
             'processed': 0,
+            'skipped': 0,
             'failed': 0,
             'paper_docs': 0,
             'chunk_docs': 0,
@@ -163,6 +166,17 @@ class BatchIndexer:
 
         for i, xml_file in enumerate(tqdm(xml_files, desc="Processing papers")):
             try:
+                # Extract paper ID from filename
+                from pathlib import Path
+                paper_id = Path(xml_file).stem.replace('.grobid.tei', '')
+
+                # Check if paper already exists
+                if skip_existing and self.indexer.get_document(paper_id):
+                    stats['skipped'] += 1
+                    if (i + 1) % 100 == 0:
+                        log.debug(f"Skipped {paper_id}: already indexed")
+                    continue
+
                 # Process paper
                 result = self.process_paper(xml_file)
 
@@ -202,11 +216,13 @@ class BatchIndexer:
         log.info(f"Indexing completed!")
         log.info(f"Total papers: {total_papers}")
         log.info(f"Successfully processed: {stats['processed']}")
+        log.info(f"Skipped (already indexed): {stats['skipped']}")
         log.info(f"Failed: {stats['failed']}")
         log.info(f"Paper documents: {stats['paper_docs']}")
         log.info(f"Chunk documents: {stats['chunk_docs']}")
         log.info(f"Duration: {stats['duration']:.2f} seconds")
-        log.info(f"Average: {stats['duration']/total_papers:.2f} sec/paper")
+        if stats['processed'] > 0:
+            log.info(f"Average: {stats['duration']/stats['processed']:.2f} sec/paper")
         log.info(f"{'='*60}\n")
 
     def _log_progress(self, stats: Dict, current: int, total: int):
@@ -215,7 +231,7 @@ class BatchIndexer:
         rate = current / elapsed if elapsed > 0 else 0
 
         log.info(f"\nCheckpoint at {current}/{total} papers:")
-        log.info(f"  Processed: {stats['processed']}, Failed: {stats['failed']}")
+        log.info(f"  Processed: {stats['processed']}, Skipped: {stats['skipped']}, Failed: {stats['failed']}")
         log.info(f"  Rate: {rate:.2f} papers/sec")
         log.info(f"  Paper docs: {stats['paper_docs']}, Chunk docs: {stats['chunk_docs']}")
 
