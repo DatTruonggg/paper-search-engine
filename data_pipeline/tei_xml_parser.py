@@ -203,15 +203,25 @@ class TEIXMLParser:
         Extract publication date from TEI or infer from arXiv ID.
         arXiv ID format: YYMM.NNNNN (e.g., 0704.2083 = April 2007)
         """
+        import re
+
         # Try to extract from XML first
         date_elem = root.find('.//tei:monogr/tei:imprint/tei:date', self.NS)
         if date_elem is not None and date_elem.get('when'):
-            return date_elem.get('when')
+            date_str = date_elem.get('when')
+            # Validate it's a proper date format
+            if re.match(r'^\d{4}-\d{2}-\d{2}', date_str):
+                return date_str
+
         if date_elem is not None and date_elem.text and date_elem.text.strip():
-            return date_elem.text.strip()
+            date_str = date_elem.text.strip()
+            # Try to extract year from text like "2023 2019 2020" or just "2023"
+            year_match = re.search(r'\b(19|20)\d{2}\b', date_str)
+            if year_match:
+                year = year_match.group(0)
+                return f"{year}-01-01"
 
         # Infer from arXiv ID format: YYMM.NNNNN
-        import re
         match = re.match(r'(\d{2})(\d{2})\.', paper_id)
         if match:
             yy, mm = match.groups()
@@ -219,7 +229,11 @@ class TEIXMLParser:
             year = int(yy)
             year = 1900 + year if year >= 91 else 2000 + year
             month = int(mm)
-            return f"{year}-{month:02d}-01"
+            # Validate month
+            if 1 <= month <= 12:
+                return f"{year}-{month:02d}-01"
+            else:
+                return f"{year}-01-01"
 
         return None
 
