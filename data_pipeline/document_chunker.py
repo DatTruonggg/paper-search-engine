@@ -44,7 +44,7 @@ class DocumentChunker:
 
     def count_tokens(self, text: str) -> int:
         """Count tokens in text"""
-        return len(self.tokenizer.encode(text))
+        return len(self.tokenizer.encode(text, disallowed_special=()))
 
     def split_into_sentences(self, text: str) -> List[str]:
         """
